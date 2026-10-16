@@ -10,12 +10,26 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-16
+
 ### Read this before upgrading
 
 - **A registered device that is not serving now answers 503 + `Retry-After`, not 404**, on
   `POST /v1/devices/{hostname}/mcp`, `GET …/sse` and `POST …/messages`. **404 now means only
   "not registered".** If a client or alert keys on 404 from those endpoints to mean "device
   unavailable", move it to 503. See [docs/upgrade.md](docs/upgrade.md#breaking-api-changes).
+- **The first rolling update to 0.3.8 still has the old failover gap**: the workers stopping
+  during it run 0.3.7, which releases devices without handing them off, so each moved device
+  is unavailable for up to ~2 minutes. From the next roll on, a stopping worker hands its
+  devices over in seconds. See
+  [docs/upgrade.md](docs/upgrade.md#rolling-upgrade-distributed-mode).
+- **Why a patch number, with a status-code change in it.** [docs/releasing.md](docs/releasing.md)
+  §1.5 makes a new capability a minor bump, and nothing here is new: both changes correct
+  behaviour found wrong on a live cluster. The 503 does change a status code a client may branch
+  on, which is why it leads these notes rather than hiding in *Fixed*; `0.3.6` set the precedent
+  of shipping a call-breaking fix as a patch. `0.4.0` stays reserved for the HTTP+SSE removal and
+  the `2026-07-28` shift.
+- **The HTTP+SSE deprecation clock is unchanged** — removal is still scheduled for **0.4.0**.
 
 ### Changed
 
@@ -24,7 +38,7 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   carried it, and `tools/loadtest/loadgen.py` sent it on every registration. 0.4.0 refuses the
   field with a 400, so anything copied from those examples would break on upgrade; the field
   is optional with `"sse"` as its default, so omitting it works now **and** after 0.4.0. Drop it
-  from your own scripts the same way. No API behaviour changes in this release.
+  from your own scripts the same way. This entry changes documentation and tooling only.
 
 ### Fixed
 
@@ -2016,6 +2030,7 @@ This release is the output of a comprehensive security, reliability, and operabi
 - **Pull-only**: OpenAPI `webhooks` / `callbacks` are not translated, and there is no
   long-running-operation (202 / job-poll) support — calls are synchronous.
 
+[0.3.8]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.8
 [0.3.7]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.7
 [0.3.6]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.6
 [0.3.5]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.5
