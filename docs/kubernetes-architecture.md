@@ -549,7 +549,6 @@ curl -X POST https://mcp-gateway.example.com/v1/devices \
   -d '{
     "hostname":   "sensor-api",
     "base_url":   "http://sensor-svc:8080",
-    "transport":  "sse",
     "auth_type":  "api_key",
     "auth": { "api_key": "sensor-key-123", "header_name": "X-API-Key" }
   }'
@@ -563,7 +562,6 @@ curl -X POST https://mcp-gateway.example.com/v1/devices \
   -d '{
     "hostname":  "actuator-api",
     "base_url":  "http://actuator-svc:9090",
-    "transport": "sse",
     "auth_type": "oauth2",
     "auth": {
       "token_endpoint": "https://auth.example.com/token",

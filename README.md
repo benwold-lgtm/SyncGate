@@ -98,11 +98,9 @@ device-mcp
 # device-mcp --host 0.0.0.0 --port 8000 --config /path/to/config.yaml
 
 # 4. Register a device
-#    ("transport" names the device pod's own transport and is currently always "sse";
-#     it does NOT choose how your client connects — see the note below.)
 curl -X POST http://localhost:8000/v1/devices \
   -H "Content-Type: application/json" \
-  -d '{"hostname": "my-sensor", "base_url": "http://192.168.1.42", "transport": "sse"}'
+  -d '{"hostname": "my-sensor", "base_url": "http://192.168.1.42"}'
 
 # 5. Talk to it over Streamable HTTP — the response comes back on this request
 curl -X POST http://localhost:8000/v1/devices/my-sensor/mcp \
@@ -114,11 +112,13 @@ curl -X POST http://localhost:8000/v1/devices/my-sensor/mcp \
 # 6. Connect an MCP client (see MCP Client Integration below)
 ```
 
-> **`transport` on a device is not your client's transport.** It describes the transport the
-> device's pod runs internally, and `"sse"` is the only value the API accepts today —
-> anything else returns `400`. How a *client* reaches that device is a separate choice made
-> per request: **`POST /v1/devices/{hostname}/mcp`** (Streamable HTTP, recommended) or the
-> deprecated `GET /v1/devices/{hostname}/sse`. Both work against any active device.
+> **Leave `transport` out of registrations.** The field names the transport a device's pod
+> runs internally, not how your client connects, and `"sse"` — its default — is the only
+> value accepted. **From 0.4.0 the field is refused with a `400`**, `"sse"` included
+> ([upgrade.md](docs/upgrade.md#breaking-api-changes)), so an example or script that sends it
+> breaks on upgrade; one that omits it works on both. How a *client* reaches a device is a
+> separate choice made per request: **`POST /v1/devices/{hostname}/mcp`** (Streamable HTTP,
+> recommended) or the deprecated `GET /v1/devices/{hostname}/sse`.
 
 > **Registering a device on a private/LAN address?** By default the gateway refuses
 > targets that resolve to private, loopback, or link-local addresses (the Tier-0 SSRF
@@ -151,7 +151,7 @@ docker compose up -d --scale worker=2
 curl -X POST http://localhost:8000/v1/devices \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"hostname": "my-sensor", "base_url": "http://192.168.1.42", "transport": "sse"}'
+  -d '{"hostname": "my-sensor", "base_url": "http://192.168.1.42"}'
 
 # 4. Talk to it over Streamable HTTP — send this to ANY gateway replica.
 #    The device is owned by one worker, but whichever replica takes the POST waits for
@@ -457,7 +457,6 @@ Prometheus metrics are exposed separately on a **dedicated metrics port** (`metr
   "hostname": "my-device",
   "base_url": "http://device.local",
   "spec_url": "http://device.local/openapi.json",
-  "transport": "sse",
   "auth_type": "api_key",
   "auth": {
     "api_key": "supersecret",
@@ -472,7 +471,7 @@ Prometheus metrics are exposed separately on a **dedicated metrics port** (`metr
 | `hostname` | Yes (POST) | Unique identifier — letters, digits, hyphens, dots; 1–253 chars |
 | `base_url` | Yes (POST) | Root URL of the device API |
 | `spec_url` | No | Full URL to the OpenAPI spec (JSON); auto-discovered if omitted. No spec published? See [examples/specs/](examples/specs/) |
-| `transport` | No | Must be `"sse"` (default) |
+| `transport` | No | **Omit it.** `"sse"` (the default) is the only accepted value today, and from 0.4.0 the field is refused with a `400` |
 | `auth_type` | No | `"api_key"`, `"oauth2"`, or `"none"` |
 | `auth` | Conditional | Required when `auth_type` is `api_key` or `oauth2` |
 | `rate_limit_rps` | No | Max requests/second to the downstream device API |
@@ -762,7 +761,7 @@ All settings live in `config.yaml`. Override the file location with `MCP_CONFIG`
 | `auth.type` | `api_key` | Default auth type for devices (`api_key`, `oauth2`, `none`) |
 | `discovery.timeout` | `10` | Spec discovery request timeout in seconds |
 | `storage.db_path` | `./data/devices.db` | SQLite path (embedded mode only; use `/app/data/devices.db` in Docker) |
-| `transport.default` | `sse` | Default MCP transport (`sse` is the only supported value) |
+| `transport.default` | `sse` | Default device transport (`sse` is the only supported value). Ignored, with a startup warning, from 0.4.0 |
 | `transport.sse.keep_alive_interval` | `15` | Seconds between SSE keepalive pings |
 | `logging.level` | `INFO` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `logging.file` | `logs/gateway.log` | Log file path |

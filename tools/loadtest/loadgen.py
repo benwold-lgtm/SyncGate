@@ -282,7 +282,6 @@ async def _register_client(idx: int, args, stats: Stats, limiter: RateLimiter, d
             body = {
                 "hostname": f"{args.hostname_prefix}-{idx}-{seq}",
                 "base_url": args.target_url,
-                "transport": "sse",
             }
             t0 = time.monotonic()
             try:
