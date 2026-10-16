@@ -10,6 +10,22 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-16
+
+### Read this before upgrading
+
+- **Nothing in this release changes a request, a response, a configuration key or a stored
+  record.** It is a dependency and documentation release: the MCP SDK leaves the image (below),
+  and the breaking changes coming in `0.4.0` are announced so callers can move first. If you do
+  nothing else, read *Announced for 0.4.0* — one item (the console's BFF must stop forwarding
+  `transport`) has to happen **before** you upgrade to `0.4.0`, not with it.
+- **Why a patch number.** [docs/releasing.md](docs/releasing.md) §1.5 makes a new capability a
+  minor bump. There is none here — no endpoint, field or behaviour is added — so this is
+  honestly a patch, and it leaves `0.4.0` free for the HTTP+SSE removal and the `2026-07-28`
+  shift it is committed to.
+- **The HTTP+SSE deprecation clock is unchanged.** The four SSE endpoints still work and are
+  still scheduled for removal in **0.4.0**.
+
 ### Changed
 
 - **The MCP SDK (`mcp`) is no longer a runtime dependency, and moves to 2.x.** The gateway
@@ -31,6 +47,14 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   `test_gateway_does_not_import_the_mcp_sdk`, fails if runtime code imports `mcp` again —
   CI installs `.[dev]` and would never notice, while the image would fail on import.
 
+### Fixed
+
+- **CI was red on any fresh install from 2026-10-14**, on two backpressure tests, with no change
+  to the code. fakeredis 2.40.0 began trimming `MAXLEN ~` streams in whole macro-nodes, as real
+  Redis does, and the tests had asserted an exact cap that real Redis never promised. They now
+  assert the bound approximate trimming does give. Test-only; the production trimming and the
+  documented 10k / 8k-alert thresholds are unchanged.
+
 ### Announced for 0.4.0
 
 These are not in this release. They are listed so that callers can move before the release
@@ -43,7 +67,7 @@ that breaks them. Details are in [docs/upgrade.md](docs/upgrade.md#breaking-api-
   archives are migrated, not refused. **The console's BFF must stop forwarding the field
   first**, or every device edit from the console fails.
 - **Fleets become server-minted handles** for `2026-07-28` clients —
-  [ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md) (Proposed), which also
+  [ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md) (Accepted), which also
   routes stateless results per request rather than through a session.
 
 ## [0.3.6] - 2026-09-02
@@ -1951,6 +1975,7 @@ This release is the output of a comprehensive security, reliability, and operabi
 - **Pull-only**: OpenAPI `webhooks` / `callbacks` are not translated, and there is no
   long-running-operation (202 / job-poll) support — calls are synchronous.
 
+[0.3.7]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.7
 [0.3.6]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.6
 [0.3.5]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.5
 [0.3.4]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.4

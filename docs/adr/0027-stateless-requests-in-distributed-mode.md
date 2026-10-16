@@ -1,6 +1,6 @@
 # ADR-0027: Stateless requests in distributed mode — results route per request, fleets are handles
 
-- **Status:** Proposed
+- **Status:** Accepted (merged 2026-10-16, #226). Not yet built — Workstream B
 - **Date:** 2026-10-16
 - **Related:** [ADR-0002](0002-redis-control-plane.md) (extended), [ADR-0005](0005-at-least-once-with-idempotency-guard.md)
   (unchanged — see §4), [ADR-0008](0008-fleet-sessions.md) (partly superseded — see §5),
