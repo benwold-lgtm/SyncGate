@@ -322,8 +322,7 @@ class DeviceWorker:
                 t.cancel()
             await asyncio.gather(*tasks, *self._call_tasks.values(), return_exceptions=True)
             await self._drain_inflight_calls()
-            await self._shutdown_pods()
-            await self._r.srem(KEYS.workers_active, self._id)
+            await self._leave_and_hand_off()
             await self._health.close()
             logger.info(f"Worker {self._id} shut down")
 
@@ -777,9 +776,52 @@ class DeviceWorker:
         await self._kill_pod(hostname)
         await self._spawn_pod(hostname)
 
+    async def _leave_and_hand_off(self) -> None:
+        """Graceful-stop sequence: leave the live set, then hand every device on.
+
+        The order is the point. A receiving worker declines an assignment when it is
+        at/over ceil(devices / live workers) (F-07), and a worker counts as live while it
+        is in ``workers:active`` with a heartbeat. Shutdown used to leave that set only
+        after tearing its pods down, so a survivor reading a hand-off computed its target
+        as if we were staying and refused the very devices we were handing it, leaving
+        them to the reconciler's orphan sweeps after all. The heartbeat key goes too —
+        every live-count reads membership first, so that is tidiness rather than
+        correctness: it stops the key lingering for its TTL vouching for a worker that left.
+        """
+        await self._r.srem(KEYS.workers_active, self._id)
+        await self._r.delete(KEYS.worker_heartbeat(self._id))
+        await self._shutdown_pods()
+
     async def _shutdown_pods(self) -> None:
-        for hostname in list(self._assigned):
+        """Tear down every pod this worker runs, and hand each device on.
+
+        ``_kill_pod`` already releases the claim and clears ``pod_active``/``worker_id``,
+        but releasing is not reassigning. Without a hand-off a device left by a clean
+        shutdown looked exactly like one left by a crash: unowned until the reconciler
+        had seen it orphaned across ``reconcile_orphan_grace_cycles`` sweeps — 42–113s
+        measured on a live cluster, every one answering clients 404 "not active", on
+        every rolling worker restart. That hysteresis exists to rule out a *transient*
+        lease lapse (F-62); a worker that is deliberately leaving has nothing to rule
+        out, so it republishes ``assign`` itself and a live worker picks the device up
+        on its next read. The reconciler stays the backstop for a worker that dies
+        without getting here.
+
+        The claim is released before the assign is published, so the receiver's
+        ``_spawn_pod`` finds it free. This worker's own assignment consumer is already
+        cancelled by now, so it cannot take its own hand-off back.
+        """
+        relinquished = list(self._assigned)
+        for hostname in relinquished:
             await self._kill_pod(hostname)
+        if not relinquished or self._backend is None:
+            return
+        for hostname in relinquished:
+            try:
+                await self._backend.publish_assignment("assign", hostname)
+            except Exception:
+                # Not fatal: the reconciler still reassigns it once the orphan grace runs out.
+                logger.exception(f"Hand-off of {hostname} failed; leaving it to the reconciler")
+        logger.info(f"Worker {self._id} handed off {len(relinquished)} device(s) on shutdown")
 
     # ------------------------------------------------------------------
     # Recovery on restart

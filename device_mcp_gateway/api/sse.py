@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sse_starlette import EventSourceResponse
 
 from device_mcp_gateway import API_V1_PREFIX, metrics
-from device_mcp_gateway.api.dispatch import _GATEWAY_ID, spawn_timeout_watcher
+from device_mcp_gateway.api.dispatch import _GATEWAY_ID, require_serving_device, spawn_timeout_watcher
 from device_mcp_gateway.audit import audit_log
 from device_mcp_gateway.observability import tracing
 from device_mcp_gateway.ratelimit import rate_limit, rate_limit_principal
@@ -36,8 +36,7 @@ async def device_sse_stream(
     mode = request.app.state.mode
     device = await reg.get_device(hostname)
 
-    if not device or not device.pod_active:
-        raise HTTPException(status_code=404, detail="Device pod not found or not active")
+    device = require_serving_device(device, hostname)
     if device.transport != "sse":
         raise HTTPException(status_code=400, detail="Device transport is not SSE")
 
@@ -116,8 +115,7 @@ async def device_sse_message(
     cfg = request.app.state.config
     device = await reg.get_device(hostname)
 
-    if not device or not device.pod_active:
-        raise HTTPException(status_code=404, detail="Device pod not found or not active")
+    device = require_serving_device(device, hostname)
     if device.transport != "sse":
         raise HTTPException(status_code=400, detail="Device transport is not SSE")
 

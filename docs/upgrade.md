@@ -72,6 +72,7 @@ is a split-brain risk. Read it with
 IMG='ghcr.io/benwold-lgtm/device-mcp-gateway:<tag>@sha256:<digest>'
 
 # 1. Workers first — they own the device connections; a roll rebalances devices (F-07).
+#    A stopping worker hands its devices straight to a live one (see below).
 #    Container name is `worker`, but the image is the gateway image.
 kubectl -n mcp set image deploy/device-mcp-worker worker="$IMG"
 kubectl -n mcp rollout status deploy/device-mcp-worker
@@ -86,6 +87,17 @@ Managing the cluster with kustomize instead? Update the `digest:` in
 `deploy/kubernetes/kustomization.yaml`'s `images:` block and re-apply — that retargets both
 deployments from one place, which is harder to get half-done than two `set image` calls.
 
+**What a worker roll costs clients.** A worker that stops cleanly drains its in-flight calls
+(`registry.shutdown_drain_timeout`, 25s), leaves the live set, releases each device and
+republishes it, so a live worker takes it over within a few seconds. Calls to a device in that
+window are answered **503** with `Retry-After`, not 404. Before 0.3.8 a stopping worker released
+its devices without republishing them, and each one stayed unowned until the reconciler had
+seen it orphaned on `reconcile_orphan_grace_cycles` sweeps — **42–113s measured**, per device,
+on every roll. **The first roll *to* 0.3.8 still has that gap**, because the workers stopping
+during it are the old version; the hand-off applies from the next roll on. A worker that is
+killed rather than stopped (OOM, node loss) still waits for its claims to lapse — that is what
+the reconciler is for.
+
 Between the two steps, sanity-check the [post-upgrade verification](#post-upgrade-verification).
 Workers-first means new execution logic lands before the new dispatch logic that may rely
 on it; if a release's notes prescribe the opposite order, follow the notes.
@@ -96,8 +108,9 @@ on it; if a release's notes prescribe the opposite order, follow the notes.
   rebalance, F-07, converges it).
 - `MCPDeadLetterGrowing` — pod-replace windows can dead-letter a few "no active pod" calls;
   [replay them](runbook.md#work-the-dead-letter-queue) once the roll settles.
-- `MCPReconcilerReassignmentChurn` — brief churn during the roll is expected; sustained
-  churn after it settles is a problem (see the runbook).
+- `MCPReconcilerReassignmentChurn` — a graceful roll hands devices off directly, so from 0.3.8
+  on it should barely move during one; the first roll to 0.3.8 still goes through the
+  reconciler (above). Sustained churn after a roll settles is a problem (see the runbook).
 
 ---
 
@@ -112,6 +125,7 @@ that talks to the management API directly.
 | **0.4.0** *(announced, not yet released)* | The HTTP+SSE endpoints are removed: `GET /v1/devices/{hostname}/sse`, `POST /v1/devices/{hostname}/messages`, `GET /v1/fleet/sse`, `POST /v1/fleet/messages`. Deprecated since 0.3.0. | Move clients to `POST /v1/devices/{hostname}/mcp` and, for fleets, to a fleet handle (next row). |
 | **0.4.0** *(announced, not yet released)* | `POST`/`PUT /v1/devices` **refuses** a `transport` field with a 400, `"sse"` included. With SSE gone it selects nothing, and accepting it would claim a choice that no longer exists. Stored devices are migrated (the field is dropped on read), and a pre-0.4.0 archive restores with a warning rather than a refusal. `transport.default` / `transport.sse.*` in config are ignored with a startup warning. | Stop sending `transport` on registration and edits. **Upgrade the console (UI BFF) first:** it sends the field back on every device edit. Remove the `transport:` block from config at leisure. |
 | **0.4.0** *(announced, not yet released)* | Fleets gain **handles** ([ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) §5): `POST /v1/fleets` mints one over a fixed device set, and `POST /v1/fleet/{handle}/mcp` serves it in both protocol eras. `POST /v1/fleet/mcp?devices=…` keeps working for handshake-era clients and is deprecated. A `2026-07-28` (stateless) client must use a handle. | Mint a handle per fleet and configure clients with its URL. |
+| **0.3.8** | A **registered** device that is not serving now answers **503 with `Retry-After`** on `POST /v1/devices/{hostname}/mcp`, `GET /v1/devices/{hostname}/sse` and `POST /v1/devices/{hostname}/messages`, where it answered 404. **404 now means only "not registered".** The old 404 told a client a device being moved between workers did not exist, and on Streamable HTTP it also read as the spec's "session expired", so a conforming client re-initialised into it instead of backing off. | If a client or alert keys on 404 from these endpoints to mean "device unavailable", key on 503 instead, and honour `Retry-After`. Keep treating 404 as "not registered". |
 | **0.3.6** | `POST /v1/admin/restore` is gone. It is now `POST /v1/admin/restore/preview` (needs `backup:read`, writes nothing, returns `plan_digest`/`plan_token`) and `POST /v1/admin/restore/apply` (needs `backup:write`, requires that `plan_token`). The `dry_run` body field no longer exists — which operation runs is which route you call, not a flag inside a body the caller controls. | Update any script or client posting to the old endpoint: preview first, then apply with the token it returned. A missing, mismatched, forged or expired (7-day) token is refused as `ERR_PLAN_STALE`. See [runbook.md](runbook.md#restore-from-a-backup). |
 | **0.3.6** | `PUT /v1/devices/{hostname}` now **refuses** `expected_tls_spki_sha256` with a 400. It previously accepted the field and silently discarded it, so this breaks nothing that was working — but a caller that was sending it will now see an error where it used to see a 200. | Supply the digest when *registering* the device, or accept the key the device is presenting with `POST /v1/devices/{hostname}/fingerprint/approve`. |
 

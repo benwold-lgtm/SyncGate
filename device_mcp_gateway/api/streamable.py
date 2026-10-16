@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 
 from device_mcp_gateway import metrics
-from device_mcp_gateway.api.dispatch import _GATEWAY_ID
+from device_mcp_gateway.api.dispatch import _GATEWAY_ID, require_serving_device
 from device_mcp_gateway.api.exchange import (
     DistributedResultExchange,
     EmbeddedResultExchange,
@@ -146,8 +146,7 @@ async def device_streamable_post(hostname: str, request: Request, response: Resp
 
     reg: Registry = request.app.state.registry
     device = await reg.get_device(hostname)
-    if not device or not device.pod_active:
-        raise HTTPException(status_code=404, detail="Device pod not found or not active")
+    device = require_serving_device(device, hostname)
 
     payload = await _read_payload(request)
     method = payload.get("method", "")
