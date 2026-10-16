@@ -168,6 +168,9 @@ keeps it only as the reference implementation trap 1 below calls for.
    - **Restoring a pre-`0.4.0` archive drops the field and says so** in the restore preview, as
      a warning rather than a refusal. An archive is configuration, and refusing it would make
      every earlier backup unrestorable.
+   - **Responses stop carrying it.** `GET /v1/devices/{hostname}` and `…/diagnostics` return
+     `"transport": "sse"` today; a field the API refuses on input must not keep appearing in
+     its output, or a client that round-trips a record (the BFF does) sends it straight back.
    - **Config:** `transport.default` and `transport.sse.*` are ignored, with a startup warning
      naming the keys. This is a warning, not a gate: stale config that selects nothing is not
      worth refusing to start over.
@@ -175,7 +178,9 @@ keeps it only as the reference implementation trap 1 below calls for.
      every device edit (`device-mcp-gateway-ui` `bff/app/routers/api.py`), so it must stop
      forwarding the field **before** the gateway reaches `0.4.0`, or every console edit will
      get the 400. `tools/loadtest/loadgen.py` registers with `"transport": "sse"` and drives
-     `/sse`; it moves to `/mcp` in the same release.
+     `/sse`; it moves to `/mcp` in the same release. (Its registration body, and every request
+     example in `README.md` and `docs/kubernetes-architecture.md`, stopped sending the field
+     in 0.3.8, so they already work against both.)
 
 ## Traps, from what this codebase has already taught us
 

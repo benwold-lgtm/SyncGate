@@ -17,6 +17,15 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   "not registered".** If a client or alert keys on 404 from those endpoints to mean "device
   unavailable", move it to 503. See [docs/upgrade.md](docs/upgrade.md#breaking-api-changes).
 
+### Changed
+
+- **Documentation and the load generator stop sending `"transport": "sse"` on device
+  registration.** Every request example in `README.md` and `docs/kubernetes-architecture.md`
+  carried it, and `tools/loadtest/loadgen.py` sent it on every registration. 0.4.0 refuses the
+  field with a 400, so anything copied from those examples would break on upgrade; the field
+  is optional with `"sse"` as its default, so omitting it works now **and** after 0.4.0. Drop it
+  from your own scripts the same way. No API behaviour changes in this release.
+
 ### Fixed
 
 - **"Registered but not serving" was reported as "not found".** Found in the same live run:
