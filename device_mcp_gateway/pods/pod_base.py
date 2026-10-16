@@ -38,7 +38,6 @@ from typing import Any
 import httpx
 import jsonschema
 from loguru import logger
-from mcp.server.fastmcp import FastMCP
 from pybreaker import CircuitBreaker
 
 from device_mcp_gateway.auth.base import AbstractAuth
@@ -153,10 +152,6 @@ class BasePod(ABC):
         # Open after 5 consecutive 5xx/connection failures; reset after 60s.
         # 4xx responses do not trip the breaker (client error, not upstream failure).
         self._breaker = CircuitBreaker(fail_max=5, reset_timeout=60)
-        self._mcp = FastMCP(
-            name=f"mcp-{hostname}",
-            instructions=f"{manifest.server_name} v{manifest.server_version}",
-        )
         self._running = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()

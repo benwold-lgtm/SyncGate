@@ -13,14 +13,6 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # Upper-bound the MCP SDK. `pods/device_pod.py` imports `mcp.server.fastmcp`,
-    # which mcp 2.0.0 removed/relocated — an unbounded `mcp>=1.0.0` meant a fresh
-    # `pip install -e ".[dev]"` resolved to 2.0.0 and 35 test files stopped even
-    # importing (CI installs from *this* file, so CI went red too; only the Docker
-    # build was spared, because it installs requirements.txt first then `. --no-deps`).
-    # Same discipline as the starlette bound below. Verified green on 1.29.0; bump the
-    # major deliberately, after porting the FastMCP import.
-    "mcp>=1.0.0,<2.0.0",
     "openapi-spec-validator>=0.5.9",
     # Upper-bound the ASGI/routing stack. `metrics.route_template` reads Starlette
     # routing internals (scope["route"]/scope["endpoint"]), and a Starlette *minor*
@@ -74,7 +66,18 @@ dev = [
     "fakeredis>=2.37.1,<3.0.0",
     # Used by tests/test_requirements.py to evaluate dependency specifiers against
     # the pip-compiled lockfile. Declared rather than leaned on as a pytest transitive.
-    "packaging>=23.0"
+    "packaging>=23.0",
+    # The official MCP SDK is a TEST dependency, not a runtime one. The gateway speaks MCP
+    # through its own JSON-RPC router (pods/pod_base.py) and its own upstream client
+    # (upstream/mcp_client.py); the only runtime import was a `FastMCP` instance nothing
+    # dispatched through, deleted when moving to 2.x. It stays here as the reference
+    # implementation the interop tests check us against — an implementation nobody here
+    # wrote (docs/roadmap-protocol-2026-07-28.md, trap 1). The image installs
+    # requirements.txt, which therefore does not carry it;
+    # tests/test_requirements.py::test_gateway_does_not_import_the_mcp_sdk keeps it that way.
+    # 2.3.0 is the floor because it is the first release verified here; the major is capped
+    # for the same reason as the tools above.
+    "mcp>=2.3.0,<3.0.0"
 ]
 # Optional distributed tracing (F-14). Install with: pip install '.[otel]'
 otel = [

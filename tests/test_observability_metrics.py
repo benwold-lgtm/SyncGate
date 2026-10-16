@@ -148,7 +148,7 @@ async def test_circuit_breaker_open_increments_counter():
     pod._breaker.open()  # force the breaker open so the next call is rejected
     before = _counter(metrics.circuit_breaker_opens_total, hostname="dev-cb")
 
-    resp = await pod._mcp._tool_manager._tools["get_item"].fn(item_id=1)
+    resp = await pod._tool_dispatch["get_item"](item_id=1)
 
     assert resp["ok"] is False  # normalized envelope (F-39)
     assert resp["status"] == 503

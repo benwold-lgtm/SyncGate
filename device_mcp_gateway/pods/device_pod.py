@@ -251,12 +251,9 @@ class DevicePod(BasePod):
             return call_api
 
         for tool in self.manifest.tools:
-            # Bind this tool's snapshot into its own dispatch closure. FastMCP's **kwargs
-            # handling would require a 'kwargs' key in arguments, so we bypass call_tool()
-            # and invoke the closure directly via _tool_dispatch.
-            handler = _make_call_api(tool, self.auth, self.base_url, self._rate_limiter)
-            self._tool_dispatch[tool.name] = handler
-            self._mcp.tool(name=tool.name, description=tool.description)(handler)
+            # Bind this tool's snapshot into its own dispatch closure; the JSON-RPC router in
+            # BasePod invokes it through _tool_dispatch.
+            self._tool_dispatch[tool.name] = _make_call_api(tool, self.auth, self.base_url, self._rate_limiter)
         logger.info(f"Registered {len(self.manifest.tools)} tools for pod {self.hostname}")
 
     async def _read_resource(self, uri: str, msg_id: Any) -> dict[str, Any]:

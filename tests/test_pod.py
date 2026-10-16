@@ -114,8 +114,8 @@ async def test_path_param_substituted_in_url():
             transport="sse",
             base_url="http://device.local",
         )
-        # Directly invoke the registered tool's underlying callable
-        tool_fn = pod._mcp._tool_manager._tools["get_item"].fn
+        # Directly invoke the tool's dispatch closure
+        tool_fn = pod._tool_dispatch["get_item"]
         await tool_fn(item_id=42)
 
     assert captured["url"] == "http://device.local/items/42", f"Unexpected URL: {captured['url']}"
@@ -159,7 +159,7 @@ async def test_query_params_not_in_path():
             transport="sse",
             base_url="http://device.local",
         )
-        tool_fn = pod._mcp._tool_manager._tools["list_items"].fn
+        tool_fn = pod._tool_dispatch["list_items"]
         await tool_fn(limit=10)
 
     assert captured["url"] == "http://device.local/items"
