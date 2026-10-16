@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the project is `0.x`, **minor releases may include breaking changes** — read
 the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.md).
 
+## [Unreleased]
+
+### Changed
+
+- **The MCP SDK (`mcp`) is no longer a runtime dependency, and moves to 2.x.** The gateway
+  never used it to speak MCP — its own router (`pods/pod_base.py`) and upstream client
+  (`upstream/mcp_client.py`) do that. The one runtime import was a `FastMCP` instance that
+  every device pod built and registered its tools on, and that nothing ever dispatched
+  through. It is deleted rather than ported to 2.x's `MCPServer`, and `mcp>=2.3.0,<3.0.0` is
+  now in the `dev` extra only, as the reference implementation the coming dual-era interop
+  tests check against ([roadmap](docs/roadmap-protocol-2026-07-28.md)). No request or response
+  changes shape.
+
+  `pip install -e .` now works against SDK 2.x, where previously only the `<2.0.0` cap kept it
+  from failing on import.
+
+  The image gets smaller with it: `mcp`, `httpx-sse` and `python-multipart` leave
+  `requirements.txt`. `python-multipart` arrived only through `mcp`, so its form-parsing
+  advisories no longer describe anything this image contains
+  ([dependency-advisories.md](docs/dependency-advisories.md)). A new guard,
+  `test_gateway_does_not_import_the_mcp_sdk`, fails if runtime code imports `mcp` again —
+  CI installs `.[dev]` and would never notice, while the image would fail on import.
+
 ## [0.3.6] - 2026-09-02
 
 ### Added

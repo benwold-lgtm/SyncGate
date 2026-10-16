@@ -23,8 +23,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 # requirements.txt entirely, so an unbounded spec here means a clean install (and
 # CI, which installs the same way) silently picks up a major the lockfile has never
 # seen. That is exactly how `mcp>=1.0.0` let mcp 2.0.0 in and removed
-# `mcp.server.fastmcp` out from under pods/device_pod.py.
-_MUST_EXCLUDE_NEXT_MAJOR = frozenset({"mcp", "fastapi", "starlette", "pydantic", "cryptography", "redis"})
+# `mcp.server.fastmcp` out from under pods/device_pod.py. (`mcp` has since moved to the
+# `dev` extra, where _CI_GATING_DEV_TOOLS below holds it to the same rule.)
+_MUST_EXCLUDE_NEXT_MAJOR = frozenset({"fastapi", "starlette", "pydantic", "cryptography", "redis"})
 
 
 def _canonical(name: str) -> str:
@@ -169,7 +170,11 @@ def test_declared_floor_supports_the_apis_the_code_imports():
 # does not cover them, because they live in the `dev` extra rather than in
 # project.dependencies. pre-commit is excluded deliberately — it is developer convenience
 # and gates nothing in CI.
-_CI_GATING_DEV_TOOLS = frozenset({"black", "flake8", "mypy", "pytest", "pytest-asyncio", "pytest-cov"})
+#
+# `mcp` is in the set for the reason it was in the runtime one: the SDK's majors move a lot
+# of API (2.0 removed `mcp.server.fastmcp` outright), and the interop tests that use it as
+# the reference implementation gate the build like any other test.
+_CI_GATING_DEV_TOOLS = frozenset({"black", "flake8", "mypy", "pytest", "pytest-asyncio", "pytest-cov", "mcp"})
 
 
 def _pyproject_dev_specs() -> dict[str, Requirement]:
@@ -221,3 +226,26 @@ def _installed_version(canonical_name: str) -> str | None:
         return version(canonical_name)
     except PackageNotFoundError:
         return None
+
+
+# --- the MCP SDK is a test dependency, and must stay one ---------------------
+
+# `mcp` lives in the `dev` extra, so CI — which installs `.[dev]` — always has it, while
+# the image, which installs requirements.txt, never does. A runtime import of it would
+# therefore pass every test and ship a container that fails on import: the drift
+# `test_every_runtime_dependency_is_locked` exists for, in a shape it cannot see, because
+# nothing would be missing from the lockfile that pyproject.toml declares at runtime.
+
+
+def test_gateway_does_not_import_the_mcp_sdk():
+    pattern = re.compile(r"^\s*(?:from\s+mcp(?:\.|\s)|import\s+mcp(?:\.|\s|$))", re.MULTILINE)
+    offenders = [
+        str(path.relative_to(_ROOT))
+        for path in sorted((_ROOT / "device_mcp_gateway").rglob("*.py"))
+        if pattern.search(path.read_text())
+    ]
+    assert not offenders, (
+        "the gateway imports the MCP SDK at runtime, but `mcp` is a dev-only dependency and "
+        "the image does not install it. Either drop the import or move `mcp` back into "
+        "project.dependencies and re-run pip-compile: " + ", ".join(offenders)
+    )

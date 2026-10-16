@@ -14,7 +14,6 @@ anyio==4.14.2
     # via
     #   device-mcp-gateway (pyproject.toml)
     #   httpx
-    #   mcp
     #   sse-starlette
     #   starlette
     #   watchfiles
@@ -32,9 +31,7 @@ cffi==2.1.1
 click==8.4.2
     # via uvicorn
 cryptography==49.0.0
-    # via
-    #   device-mcp-gateway (pyproject.toml)
-    #   pyjwt
+    # via device-mcp-gateway (pyproject.toml)
 fastapi==0.137.2
     # via device-mcp-gateway (pyproject.toml)
 h11==0.16.0
@@ -46,11 +43,7 @@ httpcore==1.0.9
 httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
-    # via
-    #   device-mcp-gateway (pyproject.toml)
-    #   mcp
-httpx-sse==0.4.3
-    # via mcp
+    # via device-mcp-gateway (pyproject.toml)
 idna==3.18
     # via
     #   anyio
@@ -58,7 +51,6 @@ idna==3.18
 jsonschema==4.26.0
     # via
     #   device-mcp-gateway (pyproject.toml)
-    #   mcp
     #   openapi-schema-validator
     #   openapi-spec-validator
 jsonschema-path==0.5.0
@@ -70,8 +62,6 @@ jsonschema-specifications==2025.9.1
 lazy-object-proxy==1.12.0
     # via openapi-spec-validator
 loguru==0.7.3
-    # via device-mcp-gateway (pyproject.toml)
-mcp==1.29.0
     # via device-mcp-gateway (pyproject.toml)
 openapi-schema-validator==0.9.0
     # via openapi-spec-validator
@@ -89,7 +79,6 @@ pydantic==2.13.4
     # via
     #   device-mcp-gateway (pyproject.toml)
     #   fastapi
-    #   mcp
     #   openapi-schema-validator
     #   openapi-spec-validator
     #   pydantic-settings
@@ -97,20 +86,15 @@ pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.14.2
     # via
-    #   mcp
     #   openapi-schema-validator
     #   openapi-spec-validator
-pyjwt[crypto]==2.13.0
-    # via
-    #   device-mcp-gateway (pyproject.toml)
-    #   mcp
+pyjwt==2.13.0
+    # via device-mcp-gateway (pyproject.toml)
 python-dotenv==1.2.2
     # via
     #   device-mcp-gateway (pyproject.toml)
     #   pydantic-settings
     #   uvicorn
-python-multipart==0.0.32
-    # via mcp
 pyyaml==6.0.3
     # via
     #   device-mcp-gateway (pyproject.toml)
@@ -133,20 +117,16 @@ rpds-py==2026.6.3
 six==1.17.0
     # via rfc3339-validator
 sse-starlette==3.4.8
-    # via
-    #   device-mcp-gateway (pyproject.toml)
-    #   mcp
+    # via device-mcp-gateway (pyproject.toml)
 starlette==1.3.1
     # via
     #   device-mcp-gateway (pyproject.toml)
     #   fastapi
-    #   mcp
     #   sse-starlette
 typing-extensions==4.16.0
     # via
     #   anyio
     #   fastapi
-    #   mcp
     #   pydantic
     #   pydantic-core
     #   referencing
@@ -155,13 +135,10 @@ typing-extensions==4.16.0
 typing-inspection==0.4.2
     # via
     #   fastapi
-    #   mcp
     #   pydantic
     #   pydantic-settings
 uvicorn[standard]==0.52.1
-    # via
-    #   device-mcp-gateway (pyproject.toml)
-    #   mcp
+    # via device-mcp-gateway (pyproject.toml)
 uvloop==0.22.1
     # via uvicorn
 watchfiles==1.2.0

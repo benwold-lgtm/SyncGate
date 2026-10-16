@@ -33,9 +33,9 @@ The load-bearing facts, in rough order of how often they settle a question:
 |---|---|---|
 | `cryptography` | Fernet (AES-128-CBC + HMAC-SHA256) for credential encryption; PyJWT's RS256/ES256/PS256 **signature verification** for OIDC | PKCS#7 / S-MIME / CMS, and the entire `x509.verification` API (`PolicyBuilder`, `Store`, the verifiers) |
 | `starlette` | JSON request bodies, routing, and `scope`-level routing internals in `metrics.route_template` | `request.form()` — this is a JSON API, it parses no forms. `request.url` is used once, for `.path` in an access log |
-| `python-multipart` | Nothing directly. Multipart in this codebase is **outbound** body *encoding* to devices (`core/adapter.py`), via httpx | `parse_form()`, which is what advisories usually target |
-| `mcp` | `mcp.server.fastmcp` for a server name and instructions string; our own JSON-RPC router does the work | The stdio and **WebSocket** transports |
-| `pydantic-settings` | Nothing directly — transitive via `mcp` and the OpenAPI validators | `BaseSettings`, `secrets_dir`, `NestedSecretsSettingsSource` |
+| `python-multipart` | **Not installed in the image** since `0.3.7` — it arrived only as a dependency of `mcp`, which left the runtime set. Multipart in this codebase is **outbound** body *encoding* to devices (`core/adapter.py`), via httpx. If it reappears in `requirements.txt`, find out what pulled it in | `parse_form()`, which is what advisories usually target |
+| `mcp` | **Nothing at runtime — not in the image** since `0.3.7`. It is a `dev` dependency, the reference client and server for interop tests. The gateway speaks MCP through its own router (`pods/pod_base.py`) and upstream client (`upstream/mcp_client.py`). An advisory against `mcp` concerns CI and developer machines, not a deployment | Everything, in production |
+| `pydantic-settings` | Nothing directly — transitive via the OpenAPI validators | `BaseSettings`, `secrets_dir`, `NestedSecretsSettingsSource` |
 | `redis` | The whole distributed control plane | — |
 
 Two blind spots worth knowing:
@@ -251,14 +251,18 @@ above comes straight back and `>=49` becomes a hard prerequisite.
 
 ## When you do upgrade
 
-`mcp` and `starlette` are upper-bounded for reasons written into `pyproject.toml`, and both
-have a guard test. After any refresh that moves them, confirm:
+`starlette` (runtime) and `mcp` (`dev` only) are upper-bounded for reasons written into
+`pyproject.toml`, and both have a guard test. After any refresh that moves them, confirm:
 
 ```bash
-python -c "from mcp.server.fastmcp import FastMCP"   # mcp<2 bound
 pytest tests/test_metrics.py::test_parametrised_route_uses_template_not_concrete_path
-pytest tests/test_requirements.py                    # the major-cap assertions
+pytest tests/test_requirements.py    # the major caps, and that the gateway never imports `mcp`
 ```
+
+`mcp` must stay out of `requirements.txt`. CI installs `.[dev]` and so always has it; the image
+installs the lockfile and never does. A runtime `import mcp` would therefore pass every test and
+ship a container that fails on import — `test_gateway_does_not_import_the_mcp_sdk` is the check
+for exactly that.
 
 Run the refresh in a **clean** virtualenv, not the working one — the failure mode these bounds
 exist to catch is precisely what a fresh resolve does differently from an incremental install.

@@ -1,7 +1,13 @@
 # Phase 6 scope — Streamable HTTP inbound, then MCP `2026-07-28`
 
-**Status:** decisions taken 2026-08-07, implementation not started. Written 2026-08-06 against
-spec revision `2026-07-28`.
+**Status:** decisions taken 2026-08-07. Written 2026-08-06 against spec revision `2026-07-28`.
+
+| Piece | State |
+|---|---|
+| Workstream A — Streamable HTTP inbound | ✅ shipped in `0.3.0` (`POST /v1/devices/{hostname}/mcp`, `POST /v1/fleet/mcp`) |
+| SDK `mcp` 1.x → 2.x | ✅ `0.3.7` — `FastMCP` deleted, `mcp` moved to the `dev` extra (see below) |
+| Workstream B — dual-era | ⬜ not started |
+| HTTP+SSE removal | ⬜ `0.4.0`, paired with Workstream B |
 
 ## Why this is not optional
 
@@ -88,9 +94,14 @@ paths exist until legacy is dropped. Two bugs this codebase actually shipped (a 
 handshake; a session leaked per health cycle, ~5,760/device/day) are bugs that cannot exist in
 a stateless protocol.
 
-The SDK is not an obstacle: `FastMCP` appears exactly once, for a server name and an
-instructions string. Our own JSON-RPC router does the work, so the `mcp` 1.x → 2.x pin is
-close to free.
+The SDK was not an obstacle, and is now out of the way. This section originally said `FastMCP`
+appeared once, "for a server name and an instructions string". That understated it:
+`DevicePod` also registered every tool on the instance — but nothing ever dispatched through
+it (the router calls `_tool_dispatch`), and `instructions` never reached a client, because
+`initialize` is built by hand. Its only consumers were three tests reaching into
+`_tool_manager`. So `0.3.7` **deleted** it rather than porting it to 2.x's `MCPServer`, and
+`mcp` moved to the `dev` extra: the gateway has no runtime dependency on the SDK at all, and
+keeps it only as the reference implementation trap 1 below calls for.
 
 ## Decisions — taken 2026-08-07
 
@@ -116,8 +127,17 @@ close to free.
 3. **Advertise three revisions: `2026-07-28`, `2025-11-25`, `2025-06-18`.** Drop `2025-03-26`
    and `2024-11-05`, which are currently listed but have never been tested against —
    advertising an untested version is a claim we cannot back. `2025-11-25` is included because
-   the installed SDK reports it as `LATEST_PROTOCOL_VERSION`, so an SDK-default client
-   negotiates it without a fallback round trip. It costs a row in the verification matrix.
+   it is what an SDK-default client offers on the handshake path, so it negotiates without a
+   fallback round trip. It costs a row in the verification matrix.
+
+   *Corrected 2026-10-16.* This was first justified by 1.x reporting `2025-11-25` as
+   `LATEST_PROTOCOL_VERSION`. In 2.x (`mcp-types` 2.3.0) that constant is `2026-07-28`; the
+   handshake default moved to `LATEST_HANDSHAKE_VERSION`, still `2025-11-25`. A 2.x client
+   probes `server/discover` at `2026-07-28` first and falls back to `initialize` offering
+   `2025-11-25`, so the decision stands and the reason now names the right constant.
+   Advertising it is a conformance claim, though — echo-if-supported means a client asking for
+   `2025-11-25` is told we speak it — so the delta from `2025-06-18` has to be checked, not
+   assumed, when the version list changes.
 
 4. **Passthrough keeps polling; `subscriptions/listen` is not adopted.** Governance is a diff,
    not a notification — classifying a breaking change needs the before and the after
