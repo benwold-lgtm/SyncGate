@@ -7,7 +7,7 @@ revision `2026-07-28`.
 |---|---|
 | Workstream A — Streamable HTTP inbound | ✅ shipped in `0.3.0` (`POST /v1/devices/{hostname}/mcp`, `POST /v1/fleet/mcp`) |
 | SDK `mcp` 1.x → 2.x | ✅ `0.3.7` — `FastMCP` deleted, `mcp` moved to the `dev` extra (see below) |
-| Workstream B — dual-era | ⬜ not started; distributed-mode design is [ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) (Proposed) |
+| Workstream B — dual-era | ⬜ not started; distributed-mode design is [ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) (Accepted) |
 | HTTP+SSE removal | ⬜ `0.4.0`, paired with Workstream B |
 
 ## Why this is not optional
