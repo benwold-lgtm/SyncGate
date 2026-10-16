@@ -1,12 +1,13 @@
 # Phase 6 scope — Streamable HTTP inbound, then MCP `2026-07-28`
 
-**Status:** decisions taken 2026-08-07. Written 2026-08-06 against spec revision `2026-07-28`.
+**Status:** decisions 1–4 taken 2026-08-07, 5–6 on 2026-10-16. Written 2026-08-06 against spec
+revision `2026-07-28`.
 
 | Piece | State |
 |---|---|
 | Workstream A — Streamable HTTP inbound | ✅ shipped in `0.3.0` (`POST /v1/devices/{hostname}/mcp`, `POST /v1/fleet/mcp`) |
 | SDK `mcp` 1.x → 2.x | ✅ `0.3.7` — `FastMCP` deleted, `mcp` moved to the `dev` extra (see below) |
-| Workstream B — dual-era | ⬜ not started |
+| Workstream B — dual-era | ⬜ not started; distributed-mode design is [ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) (Proposed) |
 | HTTP+SSE removal | ⬜ `0.4.0`, paired with Workstream B |
 
 ## Why this is not optional
@@ -103,7 +104,7 @@ it (the router calls `_tool_dispatch`), and `instructions` never reached a clien
 `mcp` moved to the `dev` extra: the gateway has no runtime dependency on the SDK at all, and
 keeps it only as the reference implementation trap 1 below calls for.
 
-## Decisions — taken 2026-08-07
+## Decisions — 1–4 taken 2026-08-07, 5–6 on 2026-10-16
 
 1. **`x-mcp-header` (SEP-2243): adopt for OpenAPI, exclude passthrough permanently.**
    Recorded as [ADR-0010](adr/0010-tool-derived-request-headers.md).
@@ -144,6 +145,37 @@ keeps it only as the reference implementation trap 1 below calls for.
    regardless, so a notification would trigger work polling already does. Polling also cannot
    be silenced by an upstream that simply stops sending notifications, which matters for a
    source we do not trust. `tools.listChanged: false` stays honest.
+
+5. **A fleet is a server-minted handle, addressed in the URL.** Recorded as
+   [ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) §5. `POST /v1/fleets` mints a
+   principal-bound handle over a fixed device set; `POST /v1/fleet/{handle}/mcp` serves it in
+   both eras. Without `initialize` there is no moment to fix a fleet's membership, so the
+   server fixes it when minting the handle instead. It lives in the URL rather than a tool
+   argument because `tools/list` needs it and takes none. `/v1/fleet/mcp?devices=` stays for the
+   handshake era only, deprecated in `0.4.0`.
+
+6. **`transport: "sse"` is rejected in `0.4.0`, as a breaking change — not accepted as an
+   alias.** Once HTTP+SSE is gone, the per-device `transport` field selects nothing: every
+   device is served on `/v1/devices/{hostname}/mcp`. Accepting `"sse"` and ignoring it would
+   keep a field that claims a choice which no longer exists, and would hide from a client that
+   the transport it names is gone. So from `0.4.0`:
+
+   - `POST`/`PUT /v1/devices` carrying `transport` is refused with a **400** that names the
+     removal and points at `docs/upgrade.md`. This follows the `0.3.6` precedent for
+     `expected_tls_spki_sha256`: a field the server would silently discard is refused instead.
+   - **Stored records are migrated, not refused.** The field is dropped when a record is read,
+     so an upgrade does not take every registered device offline.
+   - **Restoring a pre-`0.4.0` archive drops the field and says so** in the restore preview, as
+     a warning rather than a refusal. An archive is configuration, and refusing it would make
+     every earlier backup unrestorable.
+   - **Config:** `transport.default` and `transport.sse.*` are ignored, with a startup warning
+     naming the keys. This is a warning, not a gate: stale config that selects nothing is not
+     worth refusing to start over.
+   - **Callers to update first:** the UI's BFF sends the current record's `transport` back on
+     every device edit (`device-mcp-gateway-ui` `bff/app/routers/api.py`), so it must stop
+     forwarding the field **before** the gateway reaches `0.4.0`, or every console edit will
+     get the 400. `tools/loadtest/loadgen.py` registers with `"transport": "sse"` and drives
+     `/sse`; it moves to `/mcp` in the same release.
 
 ## Traps, from what this codebase has already taught us
 
