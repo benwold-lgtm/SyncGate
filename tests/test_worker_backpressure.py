@@ -53,28 +53,46 @@ async def test_dispatch_dead_letters_when_no_pod():
     assert (await r.xpending(stream, group))["pending"] == 0  # original acked
 
 
+# Both streams trim with `MAXLEN ~` (approximate=True), and real Redis trims an approximate
+# stream only in whole macro-nodes — `stream-node-max-entries`, 100 by default. A cap of 5
+# can therefore leave up to 5 + 100 entries, and 25 writes never trim at all. These tests
+# used to assert `<= cap` after 25 writes, which held only because fakeredis < 2.40 trimmed
+# approximate streams exactly; 2.40.0 models the real behaviour and they went red with no
+# change to the code. The property worth pinning is the one approximate trimming promises —
+# the stream stays within one node of the cap however much is written — so each test writes
+# well past a node and asserts that bound, plus that trimming happened at all.
+_STREAM_NODE_MAX_ENTRIES = 100
+_WRITES_PAST_A_NODE = 3 * _STREAM_NODE_MAX_ENTRIES
+
+
 @pytest.mark.asyncio
 async def test_publish_tool_call_bounds_stream(monkeypatch):
     """The pending-call stream is trimmed to MAXLEN so a backlog can't grow Redis
     without bound."""
-    monkeypatch.setattr(rb, "_CALL_STREAM_MAXLEN", 5)
+    cap = 5
+    monkeypatch.setattr(rb, "_CALL_STREAM_MAXLEN", cap)
     r = _shared_redis()
     backend = rb.RedisRegistryBackend(r)
-    for i in range(25):
+    for i in range(_WRITES_PAST_A_NODE):
         await backend.publish_tool_call("devx", f"r{i}", "s1", "gw", {"i": i})
-    assert await r.xlen("device:devx:calls") <= 5
+    length = await r.xlen("device:devx:calls")
+    assert cap <= length <= cap + _STREAM_NODE_MAX_ENTRIES
+    assert length < _WRITES_PAST_A_NODE
 
 
 @pytest.mark.asyncio
 async def test_dead_letter_stream_is_bounded(monkeypatch):
     import device_mcp_gateway.worker.runner as runner_mod
 
-    monkeypatch.setattr(runner_mod, "_DLQ_MAXLEN", 3)
+    cap = 3
+    monkeypatch.setattr(runner_mod, "_DLQ_MAXLEN", cap)
     r = _shared_redis()
     worker = _worker("w", r)
-    for i in range(10):
+    for i in range(_WRITES_PAST_A_NODE):
         await worker._dead_letter("devx", {"request_id": f"r{i}"}, "no active pod")
-    assert await r.xlen("device:devx:calls:dead") <= 3
+    length = await r.xlen("device:devx:calls:dead")
+    assert cap <= length <= cap + _STREAM_NODE_MAX_ENTRIES
+    assert length < _WRITES_PAST_A_NODE
 
 
 # --- #5: per-device concurrency cap -----------------------------------------
