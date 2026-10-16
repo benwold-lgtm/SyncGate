@@ -10,6 +10,38 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+### Read this before upgrading
+
+- **A registered device that is not serving now answers 503 + `Retry-After`, not 404**, on
+  `POST /v1/devices/{hostname}/mcp`, `GET …/sse` and `POST …/messages`. **404 now means only
+  "not registered".** If a client or alert keys on 404 from those endpoints to mean "device
+  unavailable", move it to 503. See [docs/upgrade.md](docs/upgrade.md#breaking-api-changes).
+
+### Fixed
+
+- **"Registered but not serving" was reported as "not found".** Found in the same live run:
+  while a device moved between workers, all three MCP endpoints answered 404
+  `"Device pod not found or not active"`, telling the client the device did not exist. On
+  Streamable HTTP it was worse than misleading — 404 is the spec's signal that a *session*
+  expired, so a conforming client re-initialised straight back into the same 404 instead of
+  backing off. The two cases are now separate: 404 for a device that is not registered, 503
+  with `Retry-After: 5` for one that is registered with no active pod, its detail pointing at
+  `GET /v1/devices/{hostname}` for `reachable` and `spawn_error`.
+
+- **A worker that stops cleanly now hands its devices to a live worker immediately.** Found
+  on a live cluster during the 0.3.7 verification: deleting a worker pod left each of its
+  devices unowned for **42–113s**, and the same happens to every device a rolling update
+  moves. Shutdown released each claim but never republished the assignment, so a clean stop
+  looked exactly like a crash and waited out the reconciler's orphan hysteresis (F-62), which
+  exists to rule out *transient* lease lapses. A second cause hid behind the first: the
+  stopping worker left `workers:active` only after tearing its pods down, so a survivor still
+  counted it as live, computed its per-worker target as if it were staying, and **declined**
+  the hand-off (F-07). Shutdown now leaves the live set first, then releases and republishes
+  each device. A worker that dies without shutting down still relies on the reconciler.
+
+  **The first rolling update *to* this version still has the gap**, because the workers
+  stopping during it run the old code. See [docs/upgrade.md](docs/upgrade.md#rolling-upgrade-distributed-mode).
+
 ## [0.3.7] - 2026-10-16
 
 ### Read this before upgrading

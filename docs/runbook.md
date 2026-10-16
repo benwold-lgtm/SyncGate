@@ -185,6 +185,23 @@ under `registry.spec_max_bytes` (F-09); credentials decrypt (no `MCP_SECRET_KEY`
 mismatch — see [secret-rotation.md](secret-rotation.md)); `spawn_error` in the device
 record names the failure.
 
+### An MCP endpoint answers 503 "registered but not serving"
+
+`POST /v1/devices/{hostname}/mcp`, `GET …/sse` and `POST …/messages` answer **503 with
+`Retry-After`** (0.3.8 on) when the device is registered but has no active pod. A 404 now
+means only that the device is not registered.
+
+The usual cause is a device moving between workers. A worker that stops cleanly hands its
+devices off itself, so this lasts seconds; one that died without stopping leaves them until
+its claims lapse and the reconciler reassigns them (≈1–2 minutes). If it persists with no
+roll or worker loss in progress, the device itself is the problem:
+
+```bash
+curl -H "Authorization: Bearer $KEY" "$GW/v1/devices/$H" | jq '{reachable, pod_active, spawn_error, worker_id}'
+```
+
+and continue at ["A device shows `reachable: false`"](#a-device-shows-reachable-false--its-tools-fail-d1).
+
 ### "`pod_active: true` but `/sse` returns 404" (transient, after a worker roll)
 
 Expected during a worker rollout, and it **self-resolves in seconds** — do not start
@@ -200,7 +217,8 @@ kubectl -n $NS rollout status deploy/device-mcp-worker    # is a roll actually i
 curl -H "Authorization: Bearer $KEY" "$GW/v1/devices/$H/diagnostics"   # watch worker_id change
 ```
 
-`worker_id` moving to a different worker is the reconciler completing the reassignment.
+`worker_id` moving to a different worker is the reassignment completing — the stopping
+worker's own hand-off from 0.3.8 on, or the reconciler for a worker that died.
 Retry the connection after that. If the 404 persists past a minute with no roll in
 progress, it is not this — treat it as
 ["A device shows `reachable: false`"](#a-device-shows-reachable-false--its-tools-fail-d1)
