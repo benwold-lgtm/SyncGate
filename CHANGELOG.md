@@ -31,6 +31,21 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   `test_gateway_does_not_import_the_mcp_sdk`, fails if runtime code imports `mcp` again —
   CI installs `.[dev]` and would never notice, while the image would fail on import.
 
+### Announced for 0.4.0
+
+These are not in this release. They are listed so that callers can move before the release
+that breaks them. Details are in [docs/upgrade.md](docs/upgrade.md#breaking-api-changes).
+
+- **HTTP+SSE inbound is removed**, as scheduled since 0.3.0.
+- **`transport` on device registration is refused with a 400**, `"sse"` included, as a breaking
+  change rather than accepted as an alias
+  ([roadmap decision 6](docs/roadmap-protocol-2026-07-28.md)). Stored devices and older
+  archives are migrated, not refused. **The console's BFF must stop forwarding the field
+  first**, or every device edit from the console fails.
+- **Fleets become server-minted handles** for `2026-07-28` clients —
+  [ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md) (Proposed), which also
+  routes stateless results per request rather than through a session.
+
 ## [0.3.6] - 2026-09-02
 
 ### Added
