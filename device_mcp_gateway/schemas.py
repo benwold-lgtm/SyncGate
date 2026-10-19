@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from device_mcp_gateway.shared.registry_backend import DeviceConfig
@@ -252,6 +252,89 @@ class ToolsDiffResponse(BaseModel):
     hostname: str
     tools_revision: int
     last_change: ToolChangeRecord | None = None
+
+
+class FeatureTool(BaseModel):
+    """One tool, as a device exposes it. ``schema`` is the tool's JSON input schema — the
+    same key ``/tools`` uses, so one client type reads both."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    description: str = ""
+    input_schema: dict = Field(default_factory=dict, alias="schema")
+    # "openapi" (translated from an operation, with method/path) | "proxy" (forwarded to a
+    # remote MCP server, which has no HTTP shape — method/path are empty).
+    source: str = "openapi"
+    method: str = ""
+    path: str = ""
+
+
+class FeatureResource(BaseModel):
+    """A read-only resource: ``resources/read`` on ``uri`` returns its content."""
+
+    uri: str
+    name: str
+    description: str = ""
+    mime_type: str = "application/json"
+
+
+class FeaturePrompt(BaseModel):
+    """A prompt template, with the argument names it takes."""
+
+    name: str
+    description: str = ""
+    template: str = ""
+    arguments: list[str] = []
+
+
+class ServerInfo(BaseModel):
+    """What the device says it is — never a name the gateway made up.
+
+    An OpenAPI device: its spec's ``info.title`` and ``info.version``. A proxied MCP server:
+    the ``serverInfo`` it sent on ``initialize``, as recorded on the device record
+    (``declared_name``/``declared_version``). The manifest's own ``server_name`` is the
+    gateway's ``mcp-{hostname}`` label for the server it *serves*, so it is not used here.
+    """
+
+    name: str
+    version: str
+
+
+class FeatureDiscovery(BaseModel):
+    """Which feature kinds the gateway collects for this kind of device.
+
+    ``False`` means *not looked for*, not *none found* — an empty list beside ``False`` says
+    nothing about the device. Today a proxied MCP server's tools are discovered but its
+    resources and prompts are not; an OpenAPI device has all three derived from its spec.
+    """
+
+    tools: bool = True
+    resources: bool = True
+    prompts: bool = True
+
+
+class DeviceFeatures(BaseModel):
+    """Everything a device exposes — tools, resources and prompts — from the registry's
+    cached manifest, with or without a running pod.
+
+    ``manifest_cached`` is ``False`` when there is no manifest to read: the device has never
+    been discovered, or it has been down longer than the manifest cache lives. The lists are
+    then empty because nothing is known, not because the device has nothing.
+    """
+
+    hostname: str
+    upstream_kind: str
+    pod_active: bool
+    manifest_cached: bool
+    tools_revision: int
+    # None when the device's own identity is not recorded — e.g. an MCP upstream whose
+    # serverInfo has not been persisted yet. Absent rather than a placeholder.
+    server: ServerInfo | None = None
+    discovered: FeatureDiscovery
+    tools: list[FeatureTool] = []
+    resources: list[FeatureResource] = []
+    prompts: list[FeaturePrompt] = []
 
 
 class WhoAmIResponse(BaseModel):

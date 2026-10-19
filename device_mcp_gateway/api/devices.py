@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -38,6 +39,12 @@ from device_mcp_gateway.schemas import (
     BreakerState,
     DeviceDetail,
     DeviceDiagnostics,
+    DeviceFeatures,
+    FeatureDiscovery,
+    FeaturePrompt,
+    FeatureResource,
+    FeatureTool,
+    ServerInfo,
     TlsProfileInfo,
     DeviceListResponse,
     DeviceMutationResult,
@@ -531,6 +538,96 @@ async def get_device_tools_diff(hostname: str, request: Request):
         hostname=hostname,
         tools_revision=device.tools_revision,
         last_change=ToolChangeRecord(**record) if record else None,
+    )
+
+
+def _declared_server(device: Any, manifest: dict, is_proxy: bool) -> ServerInfo | None:
+    """What the device says it is (see ``ServerInfo``), or None when that is not recorded.
+
+    Deliberately not ``manifest["server_name"]``: that is the gateway's own ``mcp-{hostname}``
+    label, and for a proxied server the manifest's version is a placeholder default.
+    """
+    if is_proxy:
+        if not device.declared_name:
+            return None
+        return ServerInfo(name=device.declared_name, version=device.declared_version or "")
+    title = (manifest.get("metadata") or {}).get("title")
+    if not title:
+        return None
+    return ServerInfo(name=title, version=str(manifest.get("server_version") or ""))
+
+
+@router.get(
+    "/devices/{hostname}/features",
+    dependencies=[Depends(require_scope(SCOPE_DEVICES_READ))],
+    response_model=DeviceFeatures,
+    response_model_by_alias=True,
+)
+async def get_device_features(hostname: str, request: Request):
+    """Everything a device exposes — tools, resources and prompts — for inspection.
+
+    Read from the registry's cached manifest, so unlike ``/tools`` it answers for a device
+    whose pod is down: that is when an operator most needs to see what the device offers.
+    The UI and the ``device-mcp devices`` CLI both read this one endpoint, so they cannot
+    disagree about a device. ``discovered`` says which feature kinds were looked for at all
+    (a proxied MCP server's resources and prompts are not, today).
+    """
+    reg: Registry = request.app.state.registry
+    device = await reg.get_device(hostname)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{hostname}' not found")
+    manifest = await reg.get_manifest(hostname) or None
+    is_proxy = device.upstream_kind == "mcp"
+    discovered = FeatureDiscovery(tools=True, resources=not is_proxy, prompts=not is_proxy)
+    if manifest is None:
+        return DeviceFeatures(
+            hostname=hostname,
+            upstream_kind=device.upstream_kind,
+            pod_active=device.pod_active,
+            manifest_cached=False,
+            tools_revision=device.tools_revision,
+            discovered=discovered,
+        )
+    server = _declared_server(device, manifest, is_proxy)
+    return DeviceFeatures(
+        hostname=hostname,
+        upstream_kind=device.upstream_kind,
+        pod_active=device.pod_active,
+        manifest_cached=True,
+        tools_revision=device.tools_revision,
+        server=server,
+        discovered=discovered,
+        tools=[
+            FeatureTool.model_validate(
+                {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "schema": t.get("schema") or {},
+                    "source": t.get("source", "openapi"),
+                    "method": t.get("method", ""),
+                    "path": t.get("path", ""),
+                }
+            )
+            for t in manifest.get("tools", [])
+        ],
+        resources=[
+            FeatureResource(
+                uri=r["uri"],
+                name=r.get("name", ""),
+                description=r.get("description", ""),
+                mime_type=r.get("mime_type", "application/json"),
+            )
+            for r in manifest.get("resources", [])
+        ],
+        prompts=[
+            FeaturePrompt(
+                name=p["name"],
+                description=p.get("description", ""),
+                template=p.get("template", ""),
+                arguments=list(p.get("arguments", [])),
+            )
+            for p in manifest.get("prompts", [])
+        ],
     )
 
 

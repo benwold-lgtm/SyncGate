@@ -10,6 +10,31 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /v1/devices/{hostname}/features`: a device's tools, resources and prompts in one
+  read.** Resources and prompts were stored in every device's manifest and never exposed: the
+  management API returned tools only. It reads the cached manifest, so unlike `/tools` (which
+  answers 409 without an active pod) it works for a device that is **down**, which is when an
+  operator most needs to see what it offers. `manifest_cached: false` marks "nothing known yet",
+  and `discovered` marks which kinds were looked for at all. A proxied MCP server's resources and
+  prompts are not collected today, so they report `false` rather than an empty list that would
+  read as "none". `devices:read`, like the other device reads.
+- **`device-mcp devices list` / `device-mcp devices show <hostname>`**: inspect devices from the
+  command line. `list` shows every OpenAPI and MCP device with kind, health (the console's rule),
+  pod, last check and credential state. `show` prints a device's tools (`--schemas` adds input
+  schemas), resources and prompts. It is a client of the **gateway API** (`/v1/admin/overview`,
+  `/v1/devices/{h}`, `…/features`), the same endpoints the console reads, so CLI and UI cannot
+  disagree, and it needs only a `devices:read` token. A bare `device-mcp` still starts the
+  gateway, unchanged.
+
+### Known gaps
+
+- **Prompts are listed but not yet served over MCP.** OpenAPI devices carry generated prompts,
+  and `/features` now shows them, but the gateway's MCP router has no `prompts/list` handler and
+  `initialize` does not advertise prompts. An MCP client asking for prompts gets "method not
+  found". This predates this release; it is now visible rather than new.
+
 ## [0.3.8] - 2026-10-16
 
 ### Read this before upgrading
