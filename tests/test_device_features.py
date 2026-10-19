@@ -71,9 +71,12 @@ def test_openapi_device_reports_tools_resources_and_prompts_with_no_pod(device):
     _cache_manifest(
         h,
         McpManifest(
-            server_name="Sensor API",
+            # The translator's real shape: the gateway's own label as server_name, the
+            # spec's identity in metadata. /features must report the latter.
+            server_name=f"mcp-{h}",
             server_version="1.2.0",
             hostname=h,
+            metadata={"title": "Sensor API", "description": "", "openapi_version": "3.1.0"},
             tools=[
                 McpTool(
                     name="get_item",
@@ -115,16 +118,29 @@ def test_proxied_mcp_device_says_resources_and_prompts_were_not_looked_for(devic
     _cache_manifest(
         h,
         McpManifest(
-            server_name="reference-upstream",
-            server_version="1.0",
+            # mcp_discovery's real shape: gateway label and a placeholder version.
+            server_name=f"mcp-{h}",
+            server_version="1.0.0",
             hostname=h,
             tools=[McpTool(name="echo_message", description="Echo", schema={"type": "object"}, source="proxy")],
+            metadata={"upstream_kind": "mcp"},
         ),
     )
     body = client.get(f"/v1/devices/{h}/features").json()
+    # No serverInfo recorded yet: say nothing rather than the gateway's placeholder.
+    assert body["server"] is None
     assert body["upstream_kind"] == "mcp"
     assert body["tools"][0]["source"] == "proxy"
     assert body["tools"][0]["method"] == "" and body["tools"][0]["path"] == ""
     # Empty lists here mean "not discovered", which `discovered` must say explicitly.
     assert body["resources"] == [] and body["prompts"] == []
     assert body["discovered"] == {"tools": True, "resources": False, "prompts": False}
+
+
+def test_proxied_mcp_device_reports_the_upstreams_own_server_info_once_recorded(device):
+    h = device("feat-mcp-declared", upstream_kind="mcp")
+    _cache_manifest(h, McpManifest(server_name=f"mcp-{h}", server_version="1.0.0", hostname=h, tools=[]))
+    backend = gw_main.app.state.registry._backend
+    asyncio.run(backend.update_device_fields(h, declared_name="reference-upstream-sdk2", declared_version="2.3.0"))
+    body = client.get(f"/v1/devices/{h}/features").json()
+    assert body["server"] == {"name": "reference-upstream-sdk2", "version": "2.3.0"}

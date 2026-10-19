@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -540,6 +541,22 @@ async def get_device_tools_diff(hostname: str, request: Request):
     )
 
 
+def _declared_server(device: Any, manifest: dict, is_proxy: bool) -> ServerInfo | None:
+    """What the device says it is (see ``ServerInfo``), or None when that is not recorded.
+
+    Deliberately not ``manifest["server_name"]``: that is the gateway's own ``mcp-{hostname}``
+    label, and for a proxied server the manifest's version is a placeholder default.
+    """
+    if is_proxy:
+        if not device.declared_name:
+            return None
+        return ServerInfo(name=device.declared_name, version=device.declared_version or "")
+    title = (manifest.get("metadata") or {}).get("title")
+    if not title:
+        return None
+    return ServerInfo(name=title, version=str(manifest.get("server_version") or ""))
+
+
 @router.get(
     "/devices/{hostname}/features",
     dependencies=[Depends(require_scope(SCOPE_DEVICES_READ))],
@@ -571,9 +588,7 @@ async def get_device_features(hostname: str, request: Request):
             tools_revision=device.tools_revision,
             discovered=discovered,
         )
-    server = None
-    if manifest.get("server_name"):
-        server = ServerInfo(name=manifest["server_name"], version=str(manifest.get("server_version", "")))
+    server = _declared_server(device, manifest, is_proxy)
     return DeviceFeatures(
         hostname=hostname,
         upstream_kind=device.upstream_kind,

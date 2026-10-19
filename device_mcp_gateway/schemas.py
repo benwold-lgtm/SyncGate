@@ -289,7 +289,13 @@ class FeaturePrompt(BaseModel):
 
 
 class ServerInfo(BaseModel):
-    """The name and version the device's manifest records for its server."""
+    """What the device says it is — never a name the gateway made up.
+
+    An OpenAPI device: its spec's ``info.title`` and ``info.version``. A proxied MCP server:
+    the ``serverInfo`` it sent on ``initialize``, as recorded on the device record
+    (``declared_name``/``declared_version``). The manifest's own ``server_name`` is the
+    gateway's ``mcp-{hostname}`` label for the server it *serves*, so it is not used here.
+    """
 
     name: str
     version: str
@@ -322,6 +328,8 @@ class DeviceFeatures(BaseModel):
     pod_active: bool
     manifest_cached: bool
     tools_revision: int
+    # None when the device's own identity is not recorded — e.g. an MCP upstream whose
+    # serverInfo has not been persisted yet. Absent rather than a placeholder.
     server: ServerInfo | None = None
     discovered: FeatureDiscovery
     tools: list[FeatureTool] = []

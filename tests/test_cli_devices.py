@@ -58,9 +58,10 @@ def fleet():
             "cli-sensor",
             manifest_to_dict(
                 McpManifest(
-                    server_name="Sensor API",
+                    server_name="mcp-cli-sensor",
                     server_version="1.2.0",
                     hostname="cli-sensor",
+                    metadata={"title": "Sensor API"},
                     tools=[
                         McpTool(
                             name="get_item",
@@ -82,8 +83,8 @@ def fleet():
             "cli-proxy",
             manifest_to_dict(
                 McpManifest(
-                    server_name="reference-upstream",
-                    server_version="1.0",
+                    server_name="mcp-cli-proxy",
+                    server_version="1.0.0",
                     hostname="cli-proxy",
                     tools=[McpTool(name="echo_message", description="Echo", schema={"type": "object"}, source="proxy")],
                 )
@@ -136,6 +137,7 @@ def test_show_proxied_device_says_resources_and_prompts_were_not_discovered():
     code, out, _ = run("show", "cli-proxy")
     assert code == 0
     assert "(mcp" in out and "(proxied)" in out and "echo_message" in out
+    assert "Server" not in out  # no serverInfo recorded — no invented name either
     assert "Resources  not discovered for a proxied MCP server" in out
     assert "Prompts    not discovered for a proxied MCP server" in out
 
