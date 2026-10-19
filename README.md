@@ -433,7 +433,8 @@ Rate limits (per source IP): `/health` and `/readyz` — 300 req/min; `POST /v1/
 | `DELETE` | `/v1/devices/{hostname}` | Unregister a device |
 | `GET` | `/v1/devices` | List all registered devices |
 | `GET` | `/v1/devices/{hostname}` | Get a single device's status |
-| `GET` | `/v1/devices/{hostname}/tools` | List a device's MCP tools |
+| `GET` | `/v1/devices/{hostname}/tools` | List a device's MCP tools — needs an active pod (409 otherwise) |
+| `GET` | `/v1/devices/{hostname}/features` | Everything a device exposes — **tools, resources and prompts** — from the cached manifest, **with or without a running pod**. What the console and `device-mcp devices show` read (`devices:read`) |
 | `GET` | `/v1/devices/{hostname}/tools/diff` | The device's most recent tool-set change — added/removed/changed tools + breaking flag (`devices:read`) |
 | `GET` | `/v1/devices/{hostname}/diagnostics` | "Why is my device down?" — status, last check + age, spec/manifest state, spawn error, circuit breaker (`devices:read`) |
 | `GET` | `/v1/devices/{hostname}/sse` | Open SSE stream (MCP transport — **deprecated**, see below) |
@@ -550,6 +551,30 @@ Two things worth knowing before you register one:
 ```
 In distributed mode the breaker runs on the worker, so `breaker` is `{"available": false, "note": "pod runs on a worker; ..."}`.
 
+**`GET /v1/devices/{hostname}/features`:**
+```json
+{
+  "hostname": "my-sensor",
+  "upstream_kind": "openapi",
+  "pod_active": false,
+  "manifest_cached": true,
+  "tools_revision": 1,
+  "server": {"name": "Sensor API", "version": "1.0.0"},
+  "discovered": {"tools": true, "resources": true, "prompts": true},
+  "tools": [{"name": "get_item", "description": "Get Item", "schema": {"type": "object", "…": "…"},
+             "source": "openapi", "method": "GET", "path": "/items/{item_id}"}],
+  "resources": [{"uri": "device://my-sensor/status", "name": "status",
+                 "description": "Device status", "mime_type": "application/json"}],
+  "prompts": [{"name": "what_is_sensor_api", "description": "Describe what Sensor API does",
+               "template": "…", "arguments": []}]
+}
+```
+Two fields keep this honest. `manifest_cached: false` means nothing is known yet (never discovered, or
+down longer than the manifest cache lives), so empty lists mean *unknown*, not *none*. `discovered`
+says which kinds were looked for at all: for a proxied MCP server (`upstream_kind: "mcp"`) the
+gateway collects tools only, so `resources`/`prompts` are `false` and their lists are empty by
+construction. A tool's `source` is `openapi` (with `method`/`path`) or `proxy` (neither).
+
 **`POST /v1/devices` / `PUT /v1/devices/{hostname}`:**
 ```json
 {"status": "registered", "hostname": "my-sensor", "pod_active": true, "reachable": true, "spawn_error": null}
@@ -563,6 +588,35 @@ In distributed mode the breaker runs on the worker, so `breaker` is `{"available
 **`GET /readyz`:** Returns `200 {"status": "ready", "mode": "..."}` when the backend is reachable, `503 {"status": "not ready", "reason": "..."}` when not.
 
 ---
+
+## Inspecting devices from the command line
+
+`device-mcp devices` lists every registered device and shows what each one exposes. It reads
+the **gateway API**, the same endpoints the web console reads, so the two always agree, and it
+needs only a token with `devices:read` (no Redis or database credentials).
+
+```bash
+export MCP_GATEWAY_URL=https://mcp-gateway.example.com     # default http://localhost:8000
+export MCP_GATEWAY_TOKEN=<token with devices:read>          # or --token-file PATH
+
+device-mcp devices list
+# HOSTNAME   KIND     HEALTH  POD     LAST CHECK  CREDENTIALS  BASE URL
+# refsdk2    mcp      online  active  4s ago      ok           http://ref-mcp-sdk2:8080/mcp
+# sensor     openapi  online  active  4s ago      ok           http://sensor-api:8080
+#
+# 2 device(s): 1 openapi, 1 mcp · 2 with an active pod
+
+device-mcp devices show sensor            # tools, resources and prompts
+device-mcp devices show sensor --schemas  # plus each tool's input schema
+device-mcp devices --json show sensor     # the raw device record + /features JSON
+```
+
+`HEALTH` uses the console's rule: `stale` when the last check is older than three health
+intervals, otherwise `online`/`offline`. `show` works for a device whose pod is down. If nothing
+is cached it says the device's features are unknown rather than printing empty lists. Exit status
+is `0` on success, `1` when the gateway refuses or cannot be reached (the message names the fix:
+missing token, missing scope, unregistered device), and `2` on a usage error. `--ca-file` (or
+`MCP_GATEWAY_CA`) verifies a gateway behind a private CA.
 
 ## Authentication
 

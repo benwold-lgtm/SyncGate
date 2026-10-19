@@ -6,6 +6,7 @@ CLI entry point for the Device MCP Gateway.
 
 Usage:
     device-mcp [--config PATH] [--host HOST] [--port PORT] [--log-level LEVEL]
+    device-mcp devices {list,show} ...    inspect devices via the gateway API (cli_devices)
 """
 
 import argparse
@@ -14,9 +15,18 @@ import sys
 
 
 def main() -> None:
+    # `device-mcp devices …` is a client of a running gateway, not the server: route it
+    # before the server's parser, so the server's flags and behaviour stay exactly as they
+    # were (a bare `device-mcp` still starts the gateway).
+    if sys.argv[1:2] == ["devices"]:
+        from device_mcp_gateway.cli_devices import devices_main
+
+        sys.exit(devices_main(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         prog="device-mcp",
         description="Device MCP Gateway — serve OpenAPI devices as MCP tool servers",
+        epilog="To inspect devices on a running gateway: device-mcp devices --help",
     )
     parser.add_argument(
         "--config",
