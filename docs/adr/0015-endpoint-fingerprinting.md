@@ -356,10 +356,11 @@ All three are now closed, and the behaviour is the same in both modes:
   which would be a false `key_changed` and, under `enforce`, a wrongful quarantine.
   `SpecService.probe_client(hostname)` makes each observation attributable by construction.
   The distributed worker probes sequentially, which is why it never hit this.
-- **One write path.** Every fingerprint write goes through `Registry.update_fingerprint_fields`:
+- **One write path.** Every fingerprint write goes through `Registry.update_persisted_fields`:
   an observation, a registration pin or policy, an approval, a trust record carried across a
-  PUT. In embedded mode it writes the live record **and** SQLite (`update_fingerprint`, an
-  allowlisted-column update), and the startup reload restores the record.
+  PUT, and what a backup restore puts back. In embedded mode it writes the live record **and**
+  SQLite (`update_fields`, an allowlisted-column update), and the startup reload restores the
+  record. The same path carries `credential_state` and `curated_spec`, which had the same gap.
 
 Consequence for an existing embedded deployment: the first probe after upgrading is
 trust-on-first-use for every device (§8), exactly as registration is in distributed mode.

@@ -220,6 +220,9 @@ class _Registry:
     async def replace_device(self, **kwargs):
         self.registered.append(kwargs["hostname"])
 
+    async def update_persisted_fields(self, hostname, **fields):
+        await self._backend.update_device_fields(hostname, **fields)
+
 
 def _config(root):
     return {"gateway": {"credentials": {"root": str(root)}}, "security": {"allow_private_targets": True}}

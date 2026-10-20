@@ -569,7 +569,7 @@ In distributed mode the breaker runs on the worker, so `breaker` is `{"available
   "resources": [{"uri": "device://my-sensor/status", "name": "status",
                  "description": "Device status", "mime_type": "application/json"}],
   "prompts": [{"name": "what_is_sensor_api", "description": "Describe what Sensor API does",
-               "template": "…", "arguments": []}]
+               "template": "…", "arguments": [], "required_arguments": []}]
 }
 ```
 Two fields keep this honest. `manifest_cached: false` means nothing is known yet (never discovered, or
@@ -578,7 +578,8 @@ says whether each kind was collected. For a proxied MCP server (`upstream_kind: 
 `false` when listing that kind failed, when the upstream listed more than the cap, or when the
 manifest predates ADR-0028. A server that does not advertise a kind has none, which reports
 `true` with an empty list. A tool's `source` is `openapi` (with `method`/`path`) or `proxy`
-(neither).
+(neither). A prompt's `required_arguments` names those of its `arguments` that `prompts/get` must
+supply. A gateway-generated prompt has none; a proxied server's carries the upstream's own.
 
 **`POST /v1/devices` / `PUT /v1/devices/{hostname}`:**
 ```json

@@ -109,7 +109,13 @@ def test_openapi_device_reports_tools_resources_and_prompts_with_no_pod(device):
     assert body["resources"][0]["uri"] == f"device://{h}/status"
     assert body["resources"][0]["mime_type"] == "application/json"
     assert body["prompts"] == [
-        {"name": "what_is_sensor", "description": "Describe the sensor", "template": "You are…", "arguments": []}
+        {
+            "name": "what_is_sensor",
+            "description": "Describe the sensor",
+            "template": "You are…",
+            "arguments": [],
+            "required_arguments": [],
+        }
     ]
 
 
@@ -162,3 +168,30 @@ def test_proxied_mcp_device_reports_what_discovery_recorded(device):
     body = client.get(f"/v1/devices/{h}/features").json()
     assert body["discovered"] == {"tools": True, "resources": True, "prompts": False}
     assert body["resources"][0]["uri"] == "ref://status"
+
+
+def test_a_proxied_prompt_reports_which_arguments_are_required(device):
+    """What an MCP client sees as `required: true` on prompts/list, inspection reports too."""
+    h = device("feat-mcp-prompt-args", upstream_kind="mcp")
+    _cache_manifest(
+        h,
+        McpManifest(
+            server_name=f"mcp-{h}",
+            server_version="1.0.0",
+            hostname=h,
+            prompts=[
+                McpPrompt(
+                    name="summarise_reading",
+                    description="Summarise",
+                    template="Summarise in {unit}.",
+                    arguments=["unit", "detail"],
+                    required_arguments=["unit"],
+                    upstream_name="Summarise_Reading",
+                )
+            ],
+            metadata={"upstream_kind": "mcp", "discovered": {"resources": True, "prompts": True}},
+        ),
+    )
+    [prompt] = client.get(f"/v1/devices/{h}/features").json()["prompts"]
+    assert prompt["arguments"] == ["unit", "detail"] and prompt["required_arguments"] == ["unit"]
+    assert "upstream_name" not in prompt  # the wire name is the gateway's business, not the reader's

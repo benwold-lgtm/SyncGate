@@ -19,7 +19,7 @@ from device_mcp_gateway.registry.server import Registry
 from device_mcp_gateway.security import fingerprint as fp
 from device_mcp_gateway.security.fingerprint_record import declared_from_spec, record_observation
 from device_mcp_gateway.shared.registry_backend import DeviceConfig
-from device_mcp_gateway.storage.sqlite_store import PERSISTED_FINGERPRINT_FIELDS, SqliteDeviceStore
+from device_mcp_gateway.storage.sqlite_store import PERSISTED_RUNTIME_FIELDS, SqliteDeviceStore
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64
@@ -157,7 +157,7 @@ async def test_an_approval_survives_a_restart(tmp_path):
     profile = await _register(reg, st, "sensor")
     await reg._observe_fingerprint(profile, _Probe(KEY_A))
     await reg._observe_fingerprint(profile, _Probe(KEY_B))
-    await reg.update_fingerprint_fields("sensor", **fp.approve(KEY_B, 1.0))  # what the API calls
+    await reg.update_persisted_fields("sensor", **fp.approve(KEY_B, 1.0))  # what the API calls
 
     rows = {r["hostname"]: r for r in await st.load_all()}
     assert rows["sensor"]["tls_spki_sha256"] == KEY_B
@@ -169,10 +169,10 @@ async def test_the_store_writes_allowlisted_fingerprint_columns_only(tmp_path):
     st = SqliteDeviceStore(db_path=str(tmp_path / "d.db"))
     await st.initialize()
     await st.save("x", {"base_url": "http://x", "transport": "sse"})
-    await st.update_fingerprint("x", {"declared_name": "X", "base_url": "http://evil", "nope": 1})
+    await st.update_fields("x", {"declared_name": "X", "base_url": "http://evil", "nope": 1})
     [row] = await st.load_all()
     assert row["declared_name"] == "X" and row["base_url"] == "http://x"
-    assert "declared_name" in PERSISTED_FINGERPRINT_FIELDS and "base_url" not in PERSISTED_FINGERPRINT_FIELDS
+    assert "declared_name" in PERSISTED_RUNTIME_FIELDS and "base_url" not in PERSISTED_RUNTIME_FIELDS
 
 
 # --- the shared comparison --------------------------------------------------------------

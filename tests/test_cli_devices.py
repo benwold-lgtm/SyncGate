@@ -45,6 +45,7 @@ def fleet():
     devices = {
         "cli-sensor": {},
         "cli-proxy": {"upstream_kind": "mcp"},
+        "cli-proxy-prompts": {"upstream_kind": "mcp"},
         "cli-undiscovered": {},
     }
     for h, extra in devices.items():
@@ -92,6 +93,29 @@ def fleet():
             ttl=300,
         )
     )
+    asyncio.run(
+        backend.set_manifest(
+            "cli-proxy-prompts",
+            manifest_to_dict(
+                McpManifest(
+                    server_name="mcp-cli-proxy-prompts",
+                    server_version="1.0.0",
+                    hostname="cli-proxy-prompts",
+                    prompts=[
+                        McpPrompt(
+                            name="summarise_reading",
+                            description="Summarise",
+                            template="Summarise in {unit}.",
+                            arguments=["unit", "detail"],
+                            required_arguments=["unit"],
+                        )
+                    ],
+                    metadata={"upstream_kind": "mcp", "discovered": {"resources": True, "prompts": True}},
+                )
+            ),
+            ttl=300,
+        )
+    )
     yield
     for h in devices:
         client.delete(f"/v1/devices/{h}")
@@ -101,7 +125,7 @@ def test_list_shows_every_device_of_both_kinds():
     code, out, err = run("list")
     assert code == 0, err
     lines = {line.split()[0]: line.split() for line in out.splitlines() if line.startswith("cli-")}
-    assert set(lines) == {"cli-proxy", "cli-sensor", "cli-undiscovered"}
+    assert set(lines) == {"cli-proxy", "cli-proxy-prompts", "cli-sensor", "cli-undiscovered"}
     assert lines["cli-sensor"][1] == "openapi" and lines["cli-proxy"][1] == "mcp"
     assert lines["cli-sensor"][3] == "inactive"
     assert "openapi" in out and "mcp" in out and "device(s)" in out
@@ -133,13 +157,20 @@ def test_show_schemas_prints_each_input_schema():
     assert "get_item input schema:" in out and '"item_id"' in out
 
 
-def test_show_proxied_device_says_resources_and_prompts_were_not_discovered():
+def test_show_proxied_device_says_resources_and_prompts_were_not_collected():
     code, out, _ = run("show", "cli-proxy")
     assert code == 0
     assert "(mcp" in out and "(proxied)" in out and "echo_message" in out
     assert "Server" not in out  # no serverInfo recorded — no invented name either
-    assert "Resources  not discovered for a proxied MCP server" in out
-    assert "Prompts    not discovered for a proxied MCP server" in out
+    assert "Resources  not collected for this device (unknown, not empty)" in out
+    assert "Prompts    not collected for this device (unknown, not empty)" in out
+
+
+def test_show_marks_a_prompts_required_arguments():
+    code, out, _ = run("show", "cli-proxy-prompts")
+    assert code == 0
+    assert "Resources (0)" in out and "Prompts (1)" in out
+    assert "args: unit (required), detail" in out
 
 
 def test_show_undiscovered_device_says_unknown_not_empty():

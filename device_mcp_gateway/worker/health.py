@@ -283,7 +283,7 @@ class WorkerHealthLoop:
             # holding a parsed spec, and before the hash comparison below so that the
             # unchanged-spec path (the overwhelmingly common one) still refreshes it.
             if not is_proxy:
-                self._record_declared_from_spec(cfg.hostname, spec)
+                self.record_declared_from_spec(cfg.hostname, spec)
             new_hash = spec_fingerprint(spec, is_proxy=is_proxy)
             if new_hash == cfg.spec_hash:
                 # Unchanged spec — the overwhelmingly common case, and the one that used
@@ -464,7 +464,7 @@ class WorkerHealthLoop:
         if seen is not None and seen.has_tls():
             self._last_seen[hostname] = seen
 
-    def _record_declared_from_spec(self, hostname: str, spec: Any) -> None:
+    def record_declared_from_spec(self, hostname: str, spec: Any) -> None:
         """Stash an OpenAPI document's ``info`` identity for the next comparison (ADR-0015).
 
         Self-reported and therefore spoofable, exactly like MCP's ``serverInfo``: this is
@@ -475,8 +475,11 @@ class WorkerHealthLoop:
         because the spec poll runs after the comparison and on a slower cadence. That is
         soon enough for inventory data and cannot raise a false alarm in the meantime: a
         cycle with nothing stashed compares as "learned nothing", and ``_declared_changed``
-        only fires when both the stored and seen values are present. The cost is that a
-        newly registered device shows no declared identity until its first spec poll.
+        only fires when both the stored and seen values are present.
+
+        Also called by the worker's spawn path with the spec it just fetched. Without that a
+        newly registered device showed no declared identity until its first spec poll — a
+        full ``spec_poll_interval`` (300 s by default), since the first sighting defers it.
 
         Never raises on a malformed document — a spec that survived fetching but carries a
         junk ``info`` block must not break the health loop for that device.
