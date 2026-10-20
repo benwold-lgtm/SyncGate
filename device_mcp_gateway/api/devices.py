@@ -569,8 +569,8 @@ async def get_device_features(hostname: str, request: Request):
     Read from the registry's cached manifest, so unlike ``/tools`` it answers for a device
     whose pod is down: that is when an operator most needs to see what the device offers.
     The UI and the ``device-mcp devices`` CLI both read this one endpoint, so they cannot
-    disagree about a device. ``discovered`` says which feature kinds were looked for at all
-    (a proxied MCP server's resources and prompts are not, today).
+    disagree about a device. ``discovered`` says per kind whether it was collected — see
+    ``FeatureDiscovery``.
     """
     reg: Registry = request.app.state.registry
     device = await reg.get_device(hostname)
@@ -578,7 +578,15 @@ async def get_device_features(hostname: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Device '{hostname}' not found")
     manifest = await reg.get_manifest(hostname) or None
     is_proxy = device.upstream_kind == "mcp"
-    discovered = FeatureDiscovery(tools=True, resources=not is_proxy, prompts=not is_proxy)
+    # An OpenAPI device derives all three from its spec. A proxied one records per kind
+    # whether it was collected (ADR-0028); a manifest from before that records nothing,
+    # which means nothing was looked for.
+    found = ((manifest or {}).get("metadata") or {}).get("discovered") or {}
+    discovered = FeatureDiscovery(
+        tools=True,
+        resources=bool(found.get("resources", False)) if is_proxy else True,
+        prompts=bool(found.get("prompts", False)) if is_proxy else True,
+    )
     if manifest is None:
         return DeviceFeatures(
             hostname=hostname,

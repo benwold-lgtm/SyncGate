@@ -33,7 +33,7 @@ from device_mcp_gateway.core.spec_limits import (
 from device_mcp_gateway.core.translator import SpecTranslator, manifest_to_dict
 from device_mcp_gateway.pods.device_pod import DevicePod
 from device_mcp_gateway.pods.mcp_proxy_pod import McpProxyPod
-from device_mcp_gateway.upstream.mcp_discovery import build_proxy_manifest
+from device_mcp_gateway.upstream.mcp_discovery import build_proxy_manifest_from
 from device_mcp_gateway.credentials import build_resolver
 from device_mcp_gateway.security.url_policy import resolve_allow_private, resolve_allowed_ports
 from device_mcp_gateway.registry.models import DeviceProfile
@@ -123,9 +123,7 @@ class PodSupervisor:
                 # NOT go through the translation pool. That pool is for CPU-bound parsing
                 # of a document; running discovery output through it would occupy a worker
                 # slot for no benefit and demand a picklable callable.
-                mcp_manifest = build_proxy_manifest(
-                    profile.hostname, spec.get("tools", []), max_tools=self._max_upstream_tools
-                )
+                mcp_manifest = build_proxy_manifest_from(profile.hostname, spec, max_tools=self._max_upstream_tools)
             else:
                 mcp_manifest = await run_translation(
                     _spec_executor,

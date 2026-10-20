@@ -58,7 +58,7 @@ from device_mcp_gateway.pods.device_pod import DevicePod
 from device_mcp_gateway.pods.mcp_proxy_pod import McpProxyPod
 from device_mcp_gateway.pods.pod_base import BasePod
 from device_mcp_gateway.upstream.mcp_client import StreamableHttpClient
-from device_mcp_gateway.upstream.mcp_discovery import build_proxy_manifest
+from device_mcp_gateway.upstream.mcp_discovery import build_proxy_manifest_from, snapshot_upstream
 from device_mcp_gateway.security.mtls import TlsProfiles
 from device_mcp_gateway.shared.keys import KEYS
 from device_mcp_gateway.shared.spec_source import CuratedSpecInvalid, resolve_spec_source
@@ -690,7 +690,7 @@ class DeviceWorker:
                 if is_proxy:
                     # Already-discovered tool definitions — nothing to parse, so this does
                     # not go through the translation pool (see registry/pod_supervisor).
-                    manifest_obj = build_proxy_manifest(hostname, spec.get("tools", []))
+                    manifest_obj = build_proxy_manifest_from(hostname, spec)
                 else:
                     manifest_obj = await run_translation(
                         _spec_executor,
@@ -905,7 +905,7 @@ class DeviceWorker:
                     timeout=discovery.get("timeout", 10),
                 )
                 try:
-                    return {"upstream_kind": "mcp", "tools": await upstream.list_tools()}
+                    return await snapshot_upstream(upstream)
                 except (ResolverError, CredentialNotBound) as exc:
                     # **Do not flatten this into "no spec".** Measured on a live cluster,
                     # four distinct credential failures — resolver unwired, mount permissions,
@@ -1120,6 +1120,10 @@ def _dict_to_manifest(d: dict) -> Any:
                 description=p.get("description", ""),
                 template=p.get("template", ""),
                 arguments=p.get("arguments", []),
+                # Both needed on the cache-hit spawn path: without upstream_name a proxied
+                # prompts/get would forward the sanitised name and reach nothing.
+                required_arguments=p.get("required_arguments", []),
+                upstream_name=p.get("upstream_name", ""),
             )
             for p in d.get("prompts", [])
         ],

@@ -509,8 +509,11 @@ Two things worth knowing before you register one:
   `GET /v1/devices/{hostname}/tools/diff` — see
   [api-change-governance.md](docs/api-change-governance.md) and
   [threat-model.md](docs/threat-model.md) §B5.
-- **v1 proxies tools only** — not resources, prompts, or stdio servers. Rationale in
-  [ADR-0009](docs/adr/0009-mcp-passthrough.md).
+- **Its resources and prompts are proxied too, when it advertises them**
+  ([ADR-0028](docs/adr/0028-proxied-resources-and-prompts.md)). Lists are served from the
+  sanitised manifest. `resources/read` and `prompts/get` are forwarded, but only for URIs and
+  prompts discovery listed. Resource URIs are the upstream's own, unchanged. Stdio servers are
+  still not supported ([ADR-0009](docs/adr/0009-mcp-passthrough.md)).
 
 ### Response shapes
 
@@ -571,9 +574,11 @@ In distributed mode the breaker runs on the worker, so `breaker` is `{"available
 ```
 Two fields keep this honest. `manifest_cached: false` means nothing is known yet (never discovered, or
 down longer than the manifest cache lives), so empty lists mean *unknown*, not *none*. `discovered`
-says which kinds were looked for at all: for a proxied MCP server (`upstream_kind: "mcp"`) the
-gateway collects tools only, so `resources`/`prompts` are `false` and their lists are empty by
-construction. A tool's `source` is `openapi` (with `method`/`path`) or `proxy` (neither).
+says whether each kind was collected. For a proxied MCP server (`upstream_kind: "mcp"`) it is
+`false` when listing that kind failed, when the upstream listed more than the cap, or when the
+manifest predates ADR-0028. A server that does not advertise a kind has none, which reports
+`true` with an empty list. A tool's `source` is `openapi` (with `method`/`path`) or `proxy`
+(neither).
 
 **`POST /v1/devices` / `PUT /v1/devices/{hostname}`:**
 ```json

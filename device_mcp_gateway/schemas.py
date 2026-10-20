@@ -302,11 +302,13 @@ class ServerInfo(BaseModel):
 
 
 class FeatureDiscovery(BaseModel):
-    """Which feature kinds the gateway collects for this kind of device.
+    """Whether each feature kind was collected for this device.
 
-    ``False`` means *not looked for*, not *none found* — an empty list beside ``False`` says
-    nothing about the device. Today a proxied MCP server's tools are discovered but its
-    resources and prompts are not; an OpenAPI device has all three derived from its spec.
+    ``False`` means *not collected*, not *none found* — an empty list beside ``False`` says
+    nothing about the device. An OpenAPI device derives all three from its spec. A proxied MCP
+    server (ADR-0028) reports ``False`` for a kind whose listing failed or exceeded the cap, or
+    when its manifest predates ADR-0028. A server that does not advertise a kind has none:
+    ``True`` with an empty list.
     """
 
     tools: bool = True

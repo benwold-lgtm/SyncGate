@@ -144,3 +144,21 @@ def test_proxied_mcp_device_reports_the_upstreams_own_server_info_once_recorded(
     asyncio.run(backend.update_device_fields(h, declared_name="reference-upstream-sdk2", declared_version="2.3.0"))
     body = client.get(f"/v1/devices/{h}/features").json()
     assert body["server"] == {"name": "reference-upstream-sdk2", "version": "2.3.0"}
+
+
+def test_proxied_mcp_device_reports_what_discovery_recorded(device):
+    """ADR-0028: discovered comes from the manifest's own record, per kind."""
+    h = device("feat-mcp-adr28", upstream_kind="mcp")
+    _cache_manifest(
+        h,
+        McpManifest(
+            server_name=f"mcp-{h}",
+            server_version="1.0.0",
+            hostname=h,
+            resources=[McpResource(uri="ref://status", name="status", description="Status")],
+            metadata={"upstream_kind": "mcp", "discovered": {"resources": True, "prompts": False}},
+        ),
+    )
+    body = client.get(f"/v1/devices/{h}/features").json()
+    assert body["discovered"] == {"tools": True, "resources": True, "prompts": False}
+    assert body["resources"][0]["uri"] == "ref://status"

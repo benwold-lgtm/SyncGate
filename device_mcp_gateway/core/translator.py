@@ -134,6 +134,13 @@ class McpPrompt:
     description: str
     template: str
     arguments: list[str] = field(default_factory=list)
+    # The subset of ``arguments`` a client must supply. A generated prompt requires none; a
+    # proxied one carries its upstream's declaration.
+    required_arguments: list[str] = field(default_factory=list)
+    # A proxied prompt's name as the upstream knows it — what goes back on the wire, since
+    # the listed name is sanitised and may differ. Empty for a generated prompt, which the
+    # gateway renders itself from ``template``.
+    upstream_name: str = ""
 
 
 @dataclass
