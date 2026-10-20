@@ -152,7 +152,7 @@ Key behaviors:
 ## Resources and prompts
 
 - Every `GET` operation also becomes a read-only **resource** at `device://{hostname}{path}`. `resources/read` is traversal-guarded.
-- One **prompt** per device is generated from `info.title`/`info.description`, listing the available tool names — a "what can this device do" primer for the client.
+- One **prompt** per device is generated from `info.title`/`info.description`, listing the available tool names — a "what can this device do" primer for the client. It is served by `prompts/list` and `prompts/get` (advertised in `initialize` as `prompts: {listChanged: false}`), rendered by the gateway with no device call. A spec with no `info.description` yields no prompt, so `prompts/list` answers an empty list.
 
 ## What is *not* translated
 

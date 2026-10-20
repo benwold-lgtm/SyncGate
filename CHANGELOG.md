@@ -28,12 +28,13 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   disagree, and it needs only a `devices:read` token. A bare `device-mcp` still starts the
   gateway, unchanged.
 
-### Known gaps
-
-- **Prompts are listed but not yet served over MCP.** OpenAPI devices carry generated prompts,
-  and `/features` now shows them, but the gateway's MCP router has no `prompts/list` handler and
-  `initialize` does not advertise prompts. An MCP client asking for prompts gets "method not
-  found". This predates this release; it is now visible rather than new.
+- **MCP clients can fetch prompts: `prompts/list` and `prompts/get`**, with `prompts` advertised
+  in `initialize`. OpenAPI devices have always had a prompt generated from the spec, recorded in
+  the manifest and, since the entry above, listed by `/features`. But the MCP router had no
+  handler for them, so a client asking got "method not found". `prompts/get` renders the
+  template in the gateway with no device call, substituting declared arguments only. It uses
+  plain `{name}` replacement, not `str.format`, so braces in spec text are left alone. An unknown
+  prompt or non-string arguments answer `-32602`. A device with no prompts answers an empty list.
 
 ## [0.3.8] - 2026-10-16
 
