@@ -343,7 +343,7 @@ class BasePod(ABC):
                 {
                     "name": pr.name,
                     "description": pr.description,
-                    "arguments": [{"name": a, "required": False} for a in pr.arguments],
+                    "arguments": [{"name": a, "required": a in pr.required_arguments} for a in pr.arguments],
                 }
                 for pr in self.manifest.prompts
             ]

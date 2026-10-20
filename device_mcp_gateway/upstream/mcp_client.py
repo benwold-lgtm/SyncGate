@@ -95,6 +95,8 @@ class StreamableHttpClient:
         self._next_id = 0
         self._initialized = False
         self._init_lock = asyncio.Lock()
+        # Filled by initialize(); empty until then.
+        self.server_capabilities: dict[str, Any] = {}
 
     @property
     def session_id(self) -> str | None:
@@ -112,6 +114,11 @@ class StreamableHttpClient:
                 "clientInfo": {"name": "device-mcp-gateway", "version": "1"},
             },
         )
+        # What the upstream says it serves. Discovery asks for resources and prompts only
+        # when they are advertised: a server that does not claim a capability has none, and
+        # probing it anyway would spend a round trip to learn "method not found".
+        caps = result.get("capabilities") if isinstance(result, dict) else None
+        self.server_capabilities = caps if isinstance(caps, dict) else {}
         # The spec says a client SHOULD follow initialize with this notification, and a
         # stateful server may refuse everything else until it arrives. No id, no reply.
         try:
@@ -169,10 +176,34 @@ class StreamableHttpClient:
             raise McpUpstreamError(f"tools/list from {redact_url(self._url)} did not return a tool list")
         return tools
 
+    async def _list(self, method: str, key: str) -> list[dict[str, Any]]:
+        await self.ensure_initialized()
+        result = await self.request(method)
+        items = result.get(key)
+        if not isinstance(items, list):
+            raise McpUpstreamError(f"{method} from {redact_url(self._url)} did not return a {key} list")
+        return items
+
+    async def list_resources(self) -> list[dict[str, Any]]:
+        return await self._list("resources/list", "resources")
+
+    async def list_prompts(self) -> list[dict[str, Any]]:
+        return await self._list("prompts/list", "prompts")
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> McpResponse:
         """Invoke a tool. Returns the raw response so the caller owns breaker policy."""
+        return await self.call("tools/call", {"name": name, "arguments": arguments})
+
+    async def read_resource(self, uri: str) -> McpResponse:
+        return await self.call("resources/read", {"uri": uri})
+
+    async def get_prompt(self, name: str, arguments: dict[str, str]) -> McpResponse:
+        return await self.call("prompts/get", {"name": name, "arguments": arguments})
+
+    async def call(self, method: str, params: dict[str, Any]) -> McpResponse:
+        """Send one forwarded request; the raw response, so the caller owns breaker policy."""
         await self.ensure_initialized()
-        envelope = self._envelope("tools/call", {"name": name, "arguments": arguments})
+        envelope = self._envelope(method, params)
         resp = await self.send(envelope)
         if resp.status_code == 404 and self._session_id:
             # The spec's signal that a session expired or was never known — which also

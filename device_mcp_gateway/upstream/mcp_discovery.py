@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""Discovering an upstream MCP server's tools, and noticing when they change.
+"""Discovering an upstream MCP server's tools, resources and prompts, and noticing when they change.
 
 This is the proxy-side counterpart to ``registry/spec_service.py`` and it deliberately
 keeps that module's contract: ``fetch_spec(profile)`` records what it found on the profile
@@ -25,6 +25,13 @@ They are re-applied here explicitly. An upstream MCP server is a *less* trustwor
 of LLM-facing text than an OpenAPI document, not more: its tool descriptions are
 instructions the model will read, and it can rewrite them at any time.
 
+**Resources and prompts get the same treatment** (ADR-0028). They are listed only when the
+upstream advertises the capability, capped, and their LLM-facing text sanitised. A resource's
+URI is passed through *verbatim* (the gateway mints no URI shape of its own, which is what
+ADR-0009 declined to do) and a URI that sanitisation would alter is dropped rather than
+listed under a form the upstream would not recognise. A failure to list either kind costs
+only that kind: ``discovered`` records it, and the device's tools are unaffected.
+
 Discovery deliberately does **not** go through ``run_translation``/``_spec_executor``. That
 pool is for CPU-bound parsing of a document already in memory; discovery is async network
 I/O, would need a picklable callable, and would occupy a translation slot for the length of
@@ -44,6 +51,8 @@ from device_mcp_gateway.audit import redact_url
 from device_mcp_gateway.core.spec_limits import DEFAULT_MAX_OPERATIONS, SpecTooLargeError
 from device_mcp_gateway.core.translator import (
     McpManifest,
+    McpPrompt,
+    McpResource,
     McpTool,
     ProxyToolSpec,
     _sanitize_name,
@@ -93,10 +102,93 @@ def canonical_tools_hash(tools: list[dict[str, Any]]) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+# Contract fields of a resource and a prompt, for change detection — as _CONTRACT_FIELDS is
+# for a tool.
+_RESOURCE_FIELDS = ("uri", "name", "description", "mimeType")
+_PROMPT_FIELDS = ("name", "description", "arguments")
+_MAX_URI_LEN = 2048
+
+
+def canonical_snapshot_hash(spec: dict[str, Any]) -> str:
+    """The change-detection hash for a whole upstream snapshot.
+
+    **Byte-identical to ``canonical_tools_hash`` when the upstream lists no resources and no
+    prompts** — which is every proxied device from before ADR-0028. Without that, upgrading
+    would make every MCP device in a fleet look changed on its first poll and replace every
+    pod at once. Only an upstream that really serves resources or prompts gets a new hash,
+    once.
+    """
+    tools_hash = canonical_tools_hash(spec.get("tools", []))
+    resources = spec.get("resources") or []
+    prompts = spec.get("prompts") or []
+    if not resources and not prompts:
+        return tools_hash
+
+    def project(items: list[Any], fields: tuple[str, ...], key: str) -> list[dict[str, Any]]:
+        return sorted(
+            ({k: i.get(k) for k in fields if k in i} for i in items if isinstance(i, dict)),
+            key=lambda i: str(i.get(key, "")),
+        )
+
+    blob = json.dumps(
+        {
+            "tools": tools_hash,
+            "resources": project(resources, _RESOURCE_FIELDS, "uri"),
+            "prompts": project(prompts, _PROMPT_FIELDS, "name"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+async def snapshot_upstream(upstream: StreamableHttpClient) -> dict[str, Any]:
+    """What an upstream MCP server exposes: its tools, and — when advertised — resources and prompts.
+
+    The one discovery routine every mode uses (embedded discovery, the worker's health loop
+    and its spawn path), so they cannot disagree about a device. Tools failing raises, as
+    before: a device without its tools is not usable. Resources or prompts failing is
+    recorded in ``discovered`` and costs only that kind.
+    """
+    tools = await upstream.list_tools()  # handshakes first, which records the capabilities
+    caps = upstream.server_capabilities
+    snapshot: dict[str, Any] = {"upstream_kind": "mcp", "tools": tools, "resources": [], "prompts": []}
+    discovered = {"resources": True, "prompts": True}
+    for kind, lister in (("resources", upstream.list_resources), ("prompts", upstream.list_prompts)):
+        if kind not in caps:
+            continue  # not advertised: the server has none, which is a discovered fact
+        try:
+            snapshot[kind] = await lister()
+        except Exception as exc:  # noqa: BLE001 — one kind failing must not cost the tools
+            discovered[kind] = False
+            logger.warning(f"MCP {kind}/list failed for {redact_url(upstream._url)}: {exc}")
+    snapshot["discovered"] = discovered
+    return snapshot
+
+
+def build_proxy_manifest_from(
+    hostname: str, spec: dict[str, Any], *, max_tools: int = DEFAULT_MAX_OPERATIONS
+) -> McpManifest:
+    """``build_proxy_manifest`` over a ``snapshot_upstream`` result — the call every site makes."""
+    return build_proxy_manifest(
+        hostname,
+        spec.get("tools", []),
+        resources=spec.get("resources"),
+        prompts=spec.get("prompts"),
+        # A snapshot from before ADR-0028 has no "discovered": nothing was looked for.
+        discovered=spec.get("discovered") or {"resources": False, "prompts": False},
+        max_tools=max_tools,
+    )
+
+
 def build_proxy_manifest(
     hostname: str,
     tools: list[dict[str, Any]],
     *,
+    resources: list[dict[str, Any]] | None = None,
+    prompts: list[dict[str, Any]] | None = None,
+    discovered: dict[str, bool] | None = None,
     server_version: str = "1.0.0",
     max_tools: int = DEFAULT_MAX_OPERATIONS,
 ) -> McpManifest:
@@ -150,13 +242,89 @@ def build_proxy_manifest(
             )
         )
 
+    found = dict(discovered or {"resources": False, "prompts": False})
+    built_resources = _proxy_resources(hostname, resources or [], max_tools, found)
+    built_prompts = _proxy_prompts(hostname, prompts or [], max_tools, found)
     return McpManifest(
         server_name=f"mcp-{hostname}",
         server_version=server_version,
         hostname=hostname,
         tools=built,
-        metadata={"upstream_kind": "mcp"},
+        resources=built_resources,
+        prompts=built_prompts,
+        metadata={"upstream_kind": "mcp", "discovered": found},
     )
+
+
+def _proxy_resources(hostname: str, entries: list[Any], cap: int, found: dict[str, bool]) -> list[McpResource]:
+    if cap > 0 and len(entries) > cap:
+        # Unlike tools, too many resources does not reject the device — its tools still
+        # work. The kind is reported as not discovered rather than silently truncated.
+        logger.warning(f"{hostname}: upstream listed {len(entries)} resources, over the {cap} cap; not listing them")
+        found["resources"] = False
+        return []
+    out: list[McpResource] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        uri = entry.get("uri")
+        if not isinstance(uri, str) or not uri or len(uri) > _MAX_URI_LEN or uri in seen:
+            continue
+        if _sanitize_text(uri, max_len=_MAX_URI_LEN) != uri:
+            # Listed verbatim or not at all: a "cleaned" URI would be one the upstream does
+            # not know, and a URI that needs cleaning is carrying something it should not.
+            logger.warning(f"{hostname}: dropping upstream resource with an unsafe URI")
+            continue
+        seen.add(uri)
+        mime = entry.get("mimeType")
+        out.append(
+            McpResource(
+                uri=uri,
+                name=_sanitize_text(entry.get("name") or uri, max_len=128),
+                description=_sanitize_text(entry.get("description")),
+                mime_type=mime if isinstance(mime, str) and mime and len(mime) <= 128 else "application/octet-stream",
+            )
+        )
+    return out
+
+
+def _proxy_prompts(hostname: str, entries: list[Any], cap: int, found: dict[str, bool]) -> list[McpPrompt]:
+    if cap > 0 and len(entries) > cap:
+        logger.warning(f"{hostname}: upstream listed {len(entries)} prompts, over the {cap} cap; not listing them")
+        found["prompts"] = False
+        return []
+    out: list[McpPrompt] = []
+    used: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        wire_name = entry.get("name")
+        if not isinstance(wire_name, str) or not wire_name:
+            continue
+        base = _sanitize_name(_sanitize_text(wire_name, max_len=128))
+        if not base:
+            continue
+        name = dedupe_name(base, used)
+        used.add(name)
+        args: list[str] = []
+        required: list[str] = []
+        for a in entry.get("arguments") or []:
+            if isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"]:
+                args.append(a["name"])
+                if a.get("required") is True:
+                    required.append(a["name"])
+        out.append(
+            McpPrompt(
+                name=name,
+                description=_sanitize_text(entry.get("description")),
+                template="",  # fetched from the upstream by prompts/get, never stored
+                arguments=args,
+                required_arguments=required,
+                upstream_name=wire_name,
+            )
+        )
+    return out
 
 
 class McpDiscoveryService:
@@ -229,7 +397,7 @@ class McpDiscoveryService:
         """
         upstream = self.client_for(profile)
         try:
-            tools = await upstream.list_tools()  # handshakes first if it has not already
+            snapshot = await snapshot_upstream(upstream)
         except Exception as exc:
             logger.warning(f"MCP discovery failed for {profile.hostname}: {exc}")
             return False
@@ -238,12 +406,12 @@ class McpDiscoveryService:
             # client, which keeps its session for the pod's lifetime.
             await upstream.close_session()
 
-        h = canonical_tools_hash(tools)
+        h = canonical_snapshot_hash(snapshot)
         old_hash = profile.config.spec_hash
         profile.config.spec_hash = h
         # Stored in the same slot the OpenAPI path uses for its parsed document, tagged so
         # the PodSupervisor can tell the two apart without re-reading the device config.
-        profile.spec_data = {"upstream_kind": "mcp", "tools": tools}
+        profile.spec_data = snapshot
         profile.config.last_check = time.time()
         await self._backend.update_device_fields(profile.hostname, spec_hash=h, last_check=profile.config.last_check)
 

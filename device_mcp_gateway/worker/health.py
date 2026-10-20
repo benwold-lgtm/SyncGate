@@ -39,7 +39,11 @@ from device_mcp_gateway.security.url_policy import build_guarded_client, observa
 from device_mcp_gateway.shared.registry_backend import AbstractRegistryBackend
 from device_mcp_gateway.shared.keys import KEYS
 from device_mcp_gateway.shared.spec_source import CuratedSpecInvalid, resolve_spec_source
-from device_mcp_gateway.upstream.mcp_discovery import build_proxy_manifest, canonical_tools_hash
+from device_mcp_gateway.upstream.mcp_discovery import (
+    build_proxy_manifest_from,
+    canonical_snapshot_hash,
+    snapshot_upstream,
+)
 
 # One pool + atexit reap for the whole worker process, shared with the spawn
 # path (worker.runner) — see worker/spec_pool.py. Names re-exported so callers
@@ -55,12 +59,12 @@ def spec_fingerprint(spec: dict[str, Any], *, is_proxy: bool) -> str:
     different rule than the comparison is worse than no baseline: it reports a change on
     the next poll and every poll after it.
 
-    Proxied upstreams hash a canonical projection of ``tools/list`` rather than the raw
-    response, since its ordering is server-controlled and ``str(spec)`` would differ
-    between two identical polls.
+    Proxied upstreams hash a canonical projection of the snapshot (tools, plus resources and
+    prompts when the upstream serves any) rather than the raw response, since ordering is
+    server-controlled and ``str(spec)`` would differ between two identical polls.
     """
     if is_proxy:
-        return canonical_tools_hash(spec.get("tools", []))
+        return canonical_snapshot_hash(spec)
     return hashlib.sha256(str(spec).encode()).hexdigest()[:16]
 
 
@@ -314,7 +318,7 @@ class WorkerHealthLoop:
                 # Store new manifest in Redis
                 try:
                     if is_proxy:
-                        manifest_obj = build_proxy_manifest(hostname, spec.get("tools", []))
+                        manifest_obj = build_proxy_manifest_from(hostname, spec)
                     else:
                         manifest_obj = await run_translation(
                             _spec_executor,
@@ -359,7 +363,7 @@ class WorkerHealthLoop:
         logger.info(f"Cached manifest for {hostname} had expired; rebuilding from the current spec")
         try:
             if is_proxy:
-                manifest_obj = build_proxy_manifest(hostname, spec.get("tools", []))
+                manifest_obj = build_proxy_manifest_from(hostname, spec)
             else:
                 manifest_obj = await run_translation(
                     _spec_executor,
@@ -534,7 +538,7 @@ class WorkerHealthLoop:
         if getattr(cfg, "upstream_kind", "openapi") == "mcp":
             upstream = self._upstream_for(cfg)
             try:
-                return {"upstream_kind": "mcp", "tools": await upstream.list_tools()}
+                return await snapshot_upstream(upstream)
             except (ResolverError, CredentialNotBound) as exc:
                 # Reached only when `initialize` authenticated and `tools/list` did not —
                 # a credential that lapsed between the two calls. Rare next to the

@@ -339,7 +339,9 @@ def resolve_policy(device_policy: str | None, default_policy: str | None) -> str
 # (ADR-0015 §9). resources/read is here deliberately: it carries the same exposure as a
 # GET-shaped tool call and differs only in code path, so stopping one and not the other
 # would leave a quiet route to exactly what the quarantine prevents.
-QUARANTINED_METHODS = frozenset({"tools/call", "resources/read"})
+# prompts/get joined with ADR-0028: for a proxied device it is forwarded to the upstream with
+# the device's credentials, exactly like a resource read.
+QUARANTINED_METHODS = frozenset({"tools/call", "resources/read", "prompts/get"})
 
 
 def quarantine_reason(
@@ -366,7 +368,7 @@ def quarantine_reason(
 def is_quarantined(fingerprint_state: str, effective_policy: str) -> bool:
     """Whether the device's *use* paths must refuse (ADR-0015 §9).
 
-    Quarantine covers tool calls **and** resource reads: both send the device's credentials
+    Quarantine covers tool calls, resource reads **and** prompt fetches: all send the device's credentials
     and return its data, differing only in code path, so stopping one and not the other
     would leave a quiet route to exactly what the quarantine prevents. Observation paths —
     reachability probes, diagnostics, GET /v1/devices — deliberately keep working, so a

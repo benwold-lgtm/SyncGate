@@ -35,6 +35,21 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   template in the gateway with no device call, substituting declared arguments only. It uses
   plain `{name}` replacement, not `str.format`, so braces in spec text are left alone. An unknown
   prompt or non-string arguments answer `-32602`. A device with no prompts answers an empty list.
+- **A proxied MCP server's resources and prompts are discovered and served**
+  ([ADR-0028](docs/adr/0028-proxied-resources-and-prompts.md), superseding ADR-0009's "tools
+  only" for these two).
+  - **Discovery:** resources and prompts are listed when the upstream advertises them, then
+    sanitised and capped like tools. URIs are kept verbatim, and one that would need cleaning
+    is dropped.
+  - **Serving:** `resources/list` and `prompts/list` come from the manifest. `resources/read`
+    and `prompts/get` are forwarded and returned untouched, but only for what discovery listed,
+    under the same breaker and rate limit as a tool call.
+  - **Inspection:** `/features` now reports them, and `discovered` says per device whether each
+    kind was collected.
+  - **Quarantine:** `prompts/get` joins the ADR-0015 quarantine set.
+  - **Upgrade:** an MCP device that serves **no** resources or prompts keeps exactly the hash it
+    had, so nothing happens to it. One that serves some gets its pod replaced once, on the first
+    poll, with no tool change recorded.
 
 ## [0.3.8] - 2026-10-16
 
