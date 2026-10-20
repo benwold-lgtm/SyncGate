@@ -14,7 +14,8 @@ token bucket and circuit breaker, and the same JSON-RPC method router.
 that is the only place the two genuinely differ:
 
 - Everything protocol-shaped (``initialize`` negotiation, ``ping``, ``tools/list``,
-  ``resources/list``, argument validation, unknown-method handling) is manifest-driven and
+  ``resources/list``, ``prompts/list``, argument validation, unknown-method handling) is
+  manifest-driven and
   lives here, so a second pod kind cannot drift from the first or quietly lose F-28
   validation.
 - ``_dispatch_tool_call`` is abstract, and returns the JSON-RPC ``result`` object rather
@@ -161,6 +162,9 @@ class BasePod(ABC):
         # forgot to populate it would silently disable validation, which is why it is
         # built here rather than alongside each kind's dispatch table.
         self._tool_schemas: dict[str, dict[str, Any]] = {t.name: t.schema for t in manifest.tools}
+        # name → prompt, for prompts/get. Manifest-driven for the same reason as the schemas:
+        # only a prompt that was listed can be fetched.
+        self._prompts = {pr.name: pr for pr in manifest.prompts}
         self._build_dispatch()
 
     # ------------------------------------------------------------------
@@ -195,6 +199,26 @@ class BasePod(ABC):
         which is meaningless for an upstream that serves resources over MCP.
         """
         return rpc_error(RPC_INVALID_PARAMS, msg_id, message=f"Unknown resource URI: {uri}")
+
+    async def _get_prompt(self, name: str, arguments: dict[str, str], msg_id: Any) -> dict[str, Any]:
+        """Serve ``prompts/get`` for a prompt the manifest lists. Default: render it here.
+
+        The name is already known to be in the manifest and ``arguments`` already checked to
+        be a string map. A translated (OpenAPI) prompt is a template the gateway generated
+        from the spec, so it is rendered locally with no device call; a pod kind whose
+        prompts live upstream overrides this to forward the request instead.
+        """
+        prompt = self._prompts[name]
+        text = prompt.template
+        # Plain `{name}` substitution for declared arguments only. Not str.format: a spec's
+        # description may contain braces, and format() would raise on them or worse.
+        for arg in prompt.arguments:
+            if arg in arguments:
+                text = text.replace("{" + arg + "}", arguments[arg])
+        result: dict[str, Any] = {"messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+        if prompt.description:
+            result["description"] = prompt.description
+        return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
     # ------------------------------------------------------------------
     # Egress
@@ -261,6 +285,9 @@ class BasePod(ABC):
                     "capabilities": {
                         "tools": {"listChanged": False},
                         "resources": {"listChanged": False, "subscribe": False},
+                        # Advertised for every pod kind: a pod with none answers an empty
+                        # list, which is a truthful "none" rather than "method not found".
+                        "prompts": {"listChanged": False},
                     },
                     "serverInfo": {
                         "name": self.manifest.server_name,
@@ -310,6 +337,33 @@ class BasePod(ABC):
 
         if method == "resources/read":
             return await self._read_resource(params.get("uri") or "", msg_id)
+
+        if method == "prompts/list":
+            prompts = [
+                {
+                    "name": pr.name,
+                    "description": pr.description,
+                    "arguments": [{"name": a, "required": False} for a in pr.arguments],
+                }
+                for pr in self.manifest.prompts
+            ]
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": prompts}}
+
+        if method == "prompts/get":
+            prompt_name = params.get("name") or ""
+            if prompt_name not in self._prompts:
+                # The spec's code for an unknown prompt name is -32602 (invalid params).
+                return rpc_error(RPC_INVALID_PARAMS, msg_id, message=f"Unknown prompt: {prompt_name}")
+            prompt_args = params.get("arguments") or {}
+            if not isinstance(prompt_args, dict) or not all(isinstance(v, str) for v in prompt_args.values()):
+                return rpc_error(
+                    RPC_INVALID_PARAMS, msg_id, message="Invalid params: prompt 'arguments' must map names to strings"
+                )
+            try:
+                return await self._get_prompt(prompt_name, prompt_args, msg_id)
+            except Exception as e:
+                logger.error(f"prompts/get failed for {prompt_name}: {e}")
+                return rpc_error(RPC_INTERNAL_ERROR, msg_id, message=str(e))
 
         # Unknown method — only send an error if this was a request (has an id)
         if msg_id is not None:
