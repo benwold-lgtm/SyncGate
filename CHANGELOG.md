@@ -10,6 +10,8 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-20
+
 ### Read this before upgrading
 
 - **Embedded mode now fingerprints its devices (ADR-0015).** It used to be distributed-only.
@@ -21,6 +23,12 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
     Previously an embedded gateway lost all three on every restart.
 
   See [docs/upgrade.md](docs/upgrade.md#embedded-mode).
+- **Why 0.3.9 and not 0.4.0.** This release adds capabilities, which
+  [docs/releasing.md](docs/releasing.md) would normally make a minor bump. But 0.4.0 is
+  already committed, in the roadmap and in the 0.3.7 and 0.3.8 notes, as the release that
+  refuses `transport: "sse"` and adds stateless MCP (ADR-0027). Taking that number now would
+  move a breaking change its users were told to expect. Nothing here breaks an API; the
+  embedded pinning above is the one behaviour change an upgrader must plan for.
 
 ### Added
 
@@ -2126,6 +2134,7 @@ This release is the output of a comprehensive security, reliability, and operabi
 - **Pull-only**: OpenAPI `webhooks` / `callbacks` are not translated, and there is no
   long-running-operation (202 / job-poll) support — calls are synchronous.
 
+[0.3.9]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.9
 [0.3.8]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.8
 [0.3.7]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.7
 [0.3.6]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.6

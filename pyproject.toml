@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "device-mcp-gateway"
-version = "0.3.8"
+version = "0.3.9"
 description = "Universal API-to-MCP Gateway - Translates OpenAPI specs to MCP servers"
 readme = "README.md"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
