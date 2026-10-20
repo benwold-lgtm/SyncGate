@@ -47,7 +47,7 @@ from device_mcp_gateway.shared.registry_backend import (
     MemoryRegistryBackend,
 )
 from device_mcp_gateway.storage.base import AbstractDeviceStore
-from device_mcp_gateway.storage.sqlite_store import PERSISTED_FINGERPRINT_FIELDS
+from device_mcp_gateway.storage.sqlite_store import PERSISTED_RUNTIME_FIELDS
 from device_mcp_gateway.upstream.mcp_discovery import McpDiscoveryService
 
 # Re-exported for backward compatibility — DeviceProfile moved to registry.models
@@ -205,7 +205,9 @@ class Registry:
         if state == "ok":
             return cfg
         cfg.credential_state = state
-        await self._backend.update_device_fields(cfg.hostname, credential_state=state)
+        # Through the persisting path: the rebuild's `save()` has just written the default
+        # back to SQLite, so a backend-only write here was undone by the next restart.
+        await self.update_persisted_fields(cfg.hostname, credential_state=state)
         return cfg
 
     async def _carry_fingerprint(self, cfg: DeviceConfig, prev: DeviceConfig | None) -> DeviceConfig:
@@ -247,7 +249,7 @@ class Registry:
         fields = {field: getattr(prev, field) for field in fp.TRUST_FIELDS}
         for field, value in fields.items():
             setattr(cfg, field, value)
-        await self.update_fingerprint_fields(cfg.hostname, **fields)
+        await self.update_persisted_fields(cfg.hostname, **fields)
         return cfg
 
     async def replace_device(
@@ -539,9 +541,12 @@ class Registry:
                 upstream_kind=record.get("upstream_kind") or "openapi",
                 upstream_transport=record.get("upstream_transport") or "http",
             )
-            # The fingerprint record (ADR-0015) — without it a restart re-pinned every device
-            # on first contact, silently accepting whatever key it presented.
-            for field in PERSISTED_FINGERPRINT_FIELDS:
+            # Everything that changed after registration: the fingerprint record (ADR-0015) —
+            # without it a restart re-pinned every device on first contact, silently accepting
+            # whatever key it presented — the credential condition, without which a restart
+            # cleared *needs reconnecting* from a device nobody had reconnected (ADR-0018 §3),
+            # and a curated spec snapshot (ADR-0020 §4b).
+            for field in PERSISTED_RUNTIME_FIELDS:
                 if record.get(field) is not None:
                     setattr(cfg, field, record[field])
             profile = DeviceProfile(config=cfg, auth=auth)
@@ -621,22 +626,24 @@ class Registry:
             observation = replace(observation, declared_name=declared[0], declared_version=declared[1])
 
         async def write(**fields: Any) -> None:
-            await self.update_fingerprint_fields(profile.hostname, **fields)
+            await self.update_persisted_fields(profile.hostname, **fields)
 
         await record_observation(write, profile.hostname, profile.config, observation)
 
-    async def update_fingerprint_fields(self, hostname: str, **fields: Any) -> None:
-        """Write fingerprint fields where they are read AND where they survive a restart.
+    async def update_persisted_fields(self, hostname: str, **fields: Any) -> None:
+        """Write runtime-changed fields where they are read AND where they survive a restart.
 
-        Every fingerprint write — an observation, a registration pin or policy, an approval,
-        a trust record carried across a PUT — goes through here. In embedded mode the
-        live record and SQLite are separate, and SQLite used to be written only at
+        Every write of a field in ``PERSISTED_RUNTIME_FIELDS`` goes through here: a
+        fingerprint observation, a registration pin or policy, an approval, a trust record
+        or credential state carried across a PUT, and what a restore puts back. In embedded
+        mode the live record and SQLite are separate, and SQLite used to be written only at
         registration, so a pin or an approval was lost on restart: the next probe then
-        re-pinned silently, which is the very event a pin exists to catch.
+        re-pinned silently, which is the very event a pin exists to catch. Fields the store
+        does not persist (``tools_revision``) still reach the live record.
         """
         await self._backend.update_device_fields(hostname, **fields)
         if self._mode != "distributed" and self._store:
-            await self._store.update_fingerprint(hostname, fields)
+            await self._store.update_fields(hostname, fields)
 
     async def _health_check_one(self, profile: DeviceProfile) -> None:
         async with self._health_semaphore:

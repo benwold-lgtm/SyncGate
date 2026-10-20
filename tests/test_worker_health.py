@@ -247,7 +247,7 @@ def test_a_junk_info_block_records_nothing_and_does_not_raise():
         {"info": {"title": "", "version": ""}},
         "not-a-dict-at-all",
     ):
-        loop._record_declared_from_spec("dev1", junk)
+        loop.record_declared_from_spec("dev1", junk)
         assert "dev1" not in loop._last_declared, f"recorded something from {junk!r}"
 
 
@@ -255,7 +255,7 @@ def test_a_title_without_a_version_is_still_worth_recording():
     """Half an identity is still inventory, and `_declared_changed` compares each field
     independently — a missing version never reads as a change."""
     loop = WorkerHealthLoop("w", MemoryRegistryBackend(), None, interval=30)
-    loop._record_declared_from_spec("dev1", {"info": {"title": "Acme Array"}})
+    loop.record_declared_from_spec("dev1", {"info": {"title": "Acme Array"}})
     assert loop._last_declared["dev1"] == ("Acme Array", None)
 
 

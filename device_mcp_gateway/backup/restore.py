@@ -575,6 +575,7 @@ async def _restore_one(
         record,
         archive,
         backend,
+        registry=registry,
         include_deadletters=include_deadletters,
         fingerprint_fields=fp_fields,
         needs_reconnect=reconnect,
@@ -605,6 +606,7 @@ async def _restore_governance(
     archive: dict[str, Any],
     backend: Any,
     *,
+    registry: Any,
     include_deadletters: bool,
     fingerprint_fields: dict[str, Any] | None = None,
     needs_reconnect: bool = False,
@@ -634,7 +636,9 @@ async def _restore_governance(
         # credential requires a human.
         fields["credential_state"] = CREDENTIAL_STATE_NEEDS_RECONNECT
     if fields:
-        await backend.update_device_fields(hostname, **fields)
+        # Through the registry, not the backend: in embedded mode the backend is memory only,
+        # so a restored pin or `needs_reconnect` written there was gone at the next restart.
+        await registry.update_persisted_fields(hostname, **fields)
     if change:
         await backend.set_last_tool_change(hostname, change)
 

@@ -21,6 +21,13 @@ from device_mcp_gateway.shared.crypto import CredentialCodec
 # compared across restarts all the same.
 PERSISTED_FINGERPRINT_FIELDS = (*TRUST_FIELDS, "declared_name", "declared_version")
 
+# Every field that changes after registration's ``save()`` and must survive a restart: the
+# fingerprint record above, the credential condition (ADR-0018 §3) and a curated spec
+# snapshot (ADR-0020 §4b). ``update_fields`` writes only these, and ``load_persisted_devices``
+# restores all of them — a column the store keeps but the registry neither writes nor reads
+# back is a setting that silently resets on every restart.
+PERSISTED_RUNTIME_FIELDS = (*PERSISTED_FINGERPRINT_FIELDS, "credential_state", "curated_spec")
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS devices (
     hostname           TEXT PRIMARY KEY,
@@ -192,10 +199,10 @@ class SqliteDeviceStore(AbstractDeviceStore):
                 rows = await cursor.fetchall()
         return [(row["hostname"], row["auth_config"]) for row in rows]
 
-    async def update_fingerprint(self, hostname: str, fields: dict[str, Any]) -> None:
+    async def update_fields(self, hostname: str, fields: dict[str, Any]) -> None:
         # Column names come from this allowlist only, never from the caller, so building the
         # SET clause from them cannot inject SQL.
-        cols = [c for c in PERSISTED_FINGERPRINT_FIELDS if c in fields]
+        cols = [c for c in PERSISTED_RUNTIME_FIELDS if c in fields]
         if not cols:
             return
         assignments = ", ".join(f"{c} = ?" for c in cols)

@@ -80,6 +80,12 @@ def _one_line(text: str, limit: int = 72) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _prompt_args(prompt: dict) -> str:
+    """``unit (required), other`` — the same required flag an MCP client sees on prompts/list."""
+    required = set(prompt.get("required_arguments") or [])
+    return ", ".join(a + (" (required)" if a in required else "") for a in prompt.get("arguments") or [])
+
+
 # --- the gateway client -------------------------------------------------------------------
 
 
@@ -222,7 +228,7 @@ def _cmd_show(gw: _Gateway, args: argparse.Namespace, out: TextIO) -> None:
 
     resources = features.get("resources", [])
     if not discovered.get("resources", True):
-        w("\nResources  not discovered for a proxied MCP server\n")
+        w("\nResources  not collected for this device (unknown, not empty)\n")
     else:
         w(f"\nResources ({len(resources)})\n")
         if resources:
@@ -238,7 +244,7 @@ def _cmd_show(gw: _Gateway, args: argparse.Namespace, out: TextIO) -> None:
 
     prompts = features.get("prompts", [])
     if not discovered.get("prompts", True):
-        w("\nPrompts    not discovered for a proxied MCP server\n")
+        w("\nPrompts    not collected for this device (unknown, not empty)\n")
     else:
         w(f"\nPrompts ({len(prompts)})\n")
         if prompts:
@@ -246,7 +252,7 @@ def _cmd_show(gw: _Gateway, args: argparse.Namespace, out: TextIO) -> None:
                 [
                     [
                         "  " + p["name"],
-                        "args: " + (", ".join(p.get("arguments") or []) or "none"),
+                        "args: " + (_prompt_args(p) or "none"),
                         _one_line(p.get("description", ""), 60),
                     ]
                     for p in prompts

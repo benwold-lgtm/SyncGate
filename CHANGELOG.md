@@ -29,9 +29,10 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   management API returned tools only. It reads the cached manifest, so unlike `/tools` (which
   answers 409 without an active pod) it works for a device that is **down**, which is when an
   operator most needs to see what it offers. `manifest_cached: false` marks "nothing known yet",
-  and `discovered` marks which kinds were looked for at all. A proxied MCP server's resources and
-  prompts are not collected today, so they report `false` rather than an empty list that would
-  read as "none". `devices:read`, like the other device reads.
+  and `discovered` marks which kinds were collected, so a kind that was not reports `false`
+  rather than an empty list that would read as "none". Each prompt lists its `arguments` and
+  the `required_arguments` among them, the same flag an MCP client sees on `prompts/list`, and
+  `device-mcp devices show` marks them `(required)`. `devices:read`, like the other device reads.
 - **`device-mcp devices list` / `device-mcp devices show <hostname>`**: inspect devices from the
   command line. `list` shows every OpenAPI and MCP device with kind, health (the console's rule),
   pod, last check and credential state. `show` prints a device's tools (`--schemas` adds input
@@ -75,10 +76,35 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   - **One probe client per device:** embedded probes now use a per-device fingerprint-capturing
     client. The pooled one is shared per TLS profile, and the embedded loop probes concurrently,
     so reading its last observation could attribute one device's certificate to another.
-  - **One write path:** every fingerprint write goes through `Registry.update_fingerprint_fields`,
+  - **One write path:** every fingerprint write goes through `Registry.update_persisted_fields`,
     which in embedded mode writes SQLite too, and startup restores the record.
   - **Visible effect:** an MCP device's declared `serverInfo` now shows in `/features` on an
     embedded gateway, which is how this gap was found.
+- **Embedded mode lost *needs reconnecting*, and everything a restore put back, on restart.**
+  SQLite has had `credential_state` (ADR-0018 §3) and `curated_spec` (ADR-0020 §4b) columns
+  since those ADRs, but the registry never wrote either after registration and startup never
+  read them back.
+  - **A PUT that kept the credential:** the carried `needs_reconnect` reached memory only, and the
+    rebuild had just written `ok` to SQLite, so the next restart cleared it from a device nobody
+    had reconnected. The operator's list went quiet while the device still could not
+    authenticate.
+  - **Restore:** the restored pin and the restored `needs_reconnect` were written to the
+    in-memory backend only. In embedded mode a restart then re-pinned the device on first contact
+    and cleared its reconnect flag. (Embedded mode does not persist `tools_revision` at all; that
+    is unchanged.)
+  - **The fix:** both now go through the same persisting write path as fingerprints, and startup
+    restores `credential_state` and `curated_spec` with the fingerprint record. Nothing sets
+    `curated_spec` yet (ADR-0020 says why), so for it this only closes the gap before it opens.
+- **A distributed OpenAPI device's declared identity took up to five minutes to appear.** The
+  health loop learns a spec's `info.title`/`info.version` only from a spec it polls itself, and
+  it defers its first poll by a full `spec_poll_interval` because the spawn path has just
+  fetched one. A plain-HTTP device has no TLS dimension either, so nothing was recorded until
+  then. The spawn path now hands its spec's identity to the health loop, which records it on its
+  next cycle.
+- **`device-mcp devices show` said a proxied server's resources and prompts were "not
+  discovered for a proxied MCP server".** That has been wrong since ADR-0028: they are
+  discovered, and the flag now means listing failed or hit the cap. It now reads "not collected
+  for this device (unknown, not empty)", the console's wording.
 
 ## [0.3.8] - 2026-10-16
 

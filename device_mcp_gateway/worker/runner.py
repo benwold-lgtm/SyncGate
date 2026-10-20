@@ -711,6 +711,10 @@ class DeviceWorker:
                 return
             manifest_dict = _manifest_to_dict(manifest_obj)
             spec_hash = spec_fingerprint(spec, is_proxy=is_proxy)
+            if not is_proxy and self._health is not None:
+                # The health loop defers its first spec poll because of this fetch, so hand
+                # it the identity now — its next cycle records it, not one 300 s later.
+                self._health.record_declared_from_spec(hostname, spec)
             ttl = self._config.get("registry", {}).get("spec_cache_ttl", 3600)
             await self._backend.set_manifest(hostname, manifest_dict, ttl=ttl)
         else:

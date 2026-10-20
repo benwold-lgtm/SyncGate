@@ -286,6 +286,10 @@ class FeaturePrompt(BaseModel):
     description: str = ""
     template: str = ""
     arguments: list[str] = []
+    # The subset of ``arguments`` a ``prompts/get`` must supply — what MCP clients already
+    # see as ``required: true`` on ``prompts/list``. Always empty for a gateway-generated
+    # prompt; a proxied server's prompt carries the upstream's own declaration.
+    required_arguments: list[str] = []
 
 
 class ServerInfo(BaseModel):
