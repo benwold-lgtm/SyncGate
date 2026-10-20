@@ -766,7 +766,10 @@ async def test_a_405_from_an_mcp_endpoint_is_not_scored_as_reachable():
         return httpx.Response(405, text="method not allowed")
 
     stub = httpx.AsyncClient(transport=httpx.MockTransport(_405))
-    reg._mcp_discovery._client_factory = lambda _hostname: stub
+    # The probe goes through the per-device fingerprint-capturing client (ADR-0015 in
+    # embedded mode). Injecting anywhere else lets a real DNS failure score "unreachable"
+    # and pass this test for the wrong reason — which it did, once the seam moved.
+    reg._spec_service.probe_client = lambda _hostname: stub
 
     assert await reg.check_reachability(profile) is False
 
@@ -781,9 +784,12 @@ async def test_a_working_initialize_is_scored_as_reachable():
         return httpx.Response(200, json=_rpc_result({"serverInfo": {"name": "remote", "version": "1"}}))
 
     stub = httpx.AsyncClient(transport=httpx.MockTransport(_ok))
-    reg._mcp_discovery._client_factory = lambda _hostname: stub
+    reg._spec_service.probe_client = lambda _hostname: stub
+    await reg._backend.set_device(profile.hostname, profile.config)  # a registered device
 
     assert await reg.check_reachability(profile) is True
+    # And the declared identity from that initialize is now recorded in embedded mode.
+    assert (profile.config.declared_name, profile.config.declared_version) == ("remote", "1")
 
 
 def test_discovery_is_selected_by_upstream_kind():

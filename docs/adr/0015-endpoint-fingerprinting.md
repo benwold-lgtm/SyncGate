@@ -334,3 +334,32 @@ cannot flag a device awaiting approval — it is visible only on the detail view
 `enforce` that device's calls are actively being refused, so this is a discovery gap rather
 than a cosmetic one. Tracked for the next gateway release; it is one field on the list
 projection plus a `pending_approval` count on the overview.
+
+## Implementation note: embedded mode (2026-10-20)
+
+Nothing in this record scopes it to distributed mode, but until now only the distributed
+worker implemented it. An **embedded** gateway never observed a TLS key or declared identity,
+so it never pinned, compared or flagged a device. Beneath that it had two more gaps of the
+same kind:
+- SQLite was written only at registration, so a registration-time pin
+  (`expected_tls_spki_sha256`), a per-device `fingerprint_policy` and any approval were
+  **lost on restart**;
+- the startup reload restored none of them.
+
+All three are now closed, and the behaviour is the same in both modes:
+
+- **One comparison.** `security/fingerprint_record.record_observation` is shared by the worker
+  and the embedded health loop, so the verdicts and the operator-facing log line cannot drift.
+- **One probe client per device in embedded mode.** The pooled outbound client is shared per TLS
+  profile and records only "the last connection it saw". The embedded loop probes devices
+  concurrently, so reading that after device A's probe could return device B's certificate,
+  which would be a false `key_changed` and, under `enforce`, a wrongful quarantine.
+  `SpecService.probe_client(hostname)` makes each observation attributable by construction.
+  The distributed worker probes sequentially, which is why it never hit this.
+- **One write path.** Every fingerprint write goes through `Registry.update_fingerprint_fields`:
+  an observation, a registration pin or policy, an approval, a trust record carried across a
+  PUT. In embedded mode it writes the live record **and** SQLite (`update_fingerprint`, an
+  allowlisted-column update), and the startup reload restores the record.
+
+Consequence for an existing embedded deployment: the first probe after upgrading is
+trust-on-first-use for every device (§8), exactly as registration is in distributed mode.

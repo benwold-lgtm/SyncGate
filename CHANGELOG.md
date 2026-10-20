@@ -10,6 +10,18 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+### Read this before upgrading
+
+- **Embedded mode now fingerprints its devices (ADR-0015).** It used to be distributed-only.
+  - **First probe:** after upgrading, each device is pinned on its first probe (trust on first
+    use). A later key change flags it `pending_approval`.
+  - **Under `security.fingerprint_policy: enforce`:** its tool calls, resource reads and prompt
+    fetches are refused until the new key is approved.
+  - **Persistence:** pins, approvals and per-device policies now persist across restarts.
+    Previously an embedded gateway lost all three on every restart.
+
+  See [docs/upgrade.md](docs/upgrade.md#embedded-mode).
+
 ### Added
 
 - **`GET /v1/devices/{hostname}/features`: a device's tools, resources and prompts in one
@@ -50,6 +62,23 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   - **Upgrade:** an MCP device that serves **no** resources or prompts keeps exactly the hash it
     had, so nothing happens to it. One that serves some gets its pod replaced once, on the first
     poll, with no tool change recorded.
+
+### Fixed
+
+- **Embedded mode never ran endpoint fingerprinting, and could not have kept the result.**
+  ADR-0015 was implemented only in the distributed worker's health loop. Underneath that,
+  embedded SQLite was written only at registration and never reloaded any fingerprint field,
+  so a registration-time pin (`expected_tls_spki_sha256`), a per-device `fingerprint_policy` and
+  any approval were silently lost on restart. The fixes:
+  - **One comparison:** a single shared routine (`security/fingerprint_record`) runs in both
+    modes.
+  - **One probe client per device:** embedded probes now use a per-device fingerprint-capturing
+    client. The pooled one is shared per TLS profile, and the embedded loop probes concurrently,
+    so reading its last observation could attribute one device's certificate to another.
+  - **One write path:** every fingerprint write goes through `Registry.update_fingerprint_fields`,
+    which in embedded mode writes SQLite too, and startup restores the record.
+  - **Visible effect:** an MCP device's declared `serverInfo` now shows in `/features` on an
+    embedded gateway, which is how this gap was found.
 
 ## [0.3.8] - 2026-10-16
 
