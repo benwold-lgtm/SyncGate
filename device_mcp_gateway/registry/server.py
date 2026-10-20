@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+from dataclasses import replace
 from typing import Any
 
 from loguru import logger
@@ -35,6 +36,8 @@ from device_mcp_gateway.registry.curated_spec_source import CuratedSpecSource
 from device_mcp_gateway.registry.pod_supervisor import PodSupervisor
 from device_mcp_gateway.registry.spec_service import SpecService
 from device_mcp_gateway.security import fingerprint as fp
+from device_mcp_gateway.security.fingerprint_record import declared_from_spec, record_observation
+from device_mcp_gateway.security.url_policy import observation_from_client
 from device_mcp_gateway.security.mtls import TlsProfiles
 from device_mcp_gateway.shared.crypto import CredentialCodec
 from device_mcp_gateway.shared.spec_source import resolve_spec_source
@@ -44,6 +47,7 @@ from device_mcp_gateway.shared.registry_backend import (
     MemoryRegistryBackend,
 )
 from device_mcp_gateway.storage.base import AbstractDeviceStore
+from device_mcp_gateway.storage.sqlite_store import PERSISTED_FINGERPRINT_FIELDS
 from device_mcp_gateway.upstream.mcp_discovery import McpDiscoveryService
 
 # Re-exported for backward compatibility — DeviceProfile moved to registry.models
@@ -243,7 +247,7 @@ class Registry:
         fields = {field: getattr(prev, field) for field in fp.TRUST_FIELDS}
         for field, value in fields.items():
             setattr(cfg, field, value)
-        await self._backend.update_device_fields(cfg.hostname, **fields)
+        await self.update_fingerprint_fields(cfg.hostname, **fields)
         return cfg
 
     async def replace_device(
@@ -331,6 +335,7 @@ class Registry:
             if profile and profile.pod_active and profile.pod:
                 await self._pod_supervisor.kill(profile)
         self._device_locks.pop(hostname, None)
+        await self._spec_service.drop_probe_client(hostname)
         if self._store:
             await self._store.delete(hostname)
         await self._backend.delete_device(hostname)
@@ -534,6 +539,11 @@ class Registry:
                 upstream_kind=record.get("upstream_kind") or "openapi",
                 upstream_transport=record.get("upstream_transport") or "http",
             )
+            # The fingerprint record (ADR-0015) — without it a restart re-pinned every device
+            # on first contact, silently accepting whatever key it presented.
+            for field in PERSISTED_FINGERPRINT_FIELDS:
+                if record.get(field) is not None:
+                    setattr(cfg, field, record[field])
             profile = DeviceProfile(config=cfg, auth=auth)
             self._profiles[record["hostname"]] = profile
             await self._backend.set_device(record["hostname"], cfg)
@@ -565,15 +575,18 @@ class Registry:
         return self._spec_service
 
     async def check_reachability(self, profile: DeviceProfile) -> bool:
+        # The probe uses this device's own fingerprint-capturing client (ADR-0015), so the
+        # TLS observation read afterwards belongs to this device and no other.
+        probe = self._spec_service.probe_client(profile.hostname)
         if profile.config.upstream_kind == "mcp":
             # An MCP endpoint answers a bare GET with 404/405, so the ``status_code < 500``
             # test below would score a dead or misconfigured upstream as healthy and spawn
             # a pod against nothing. Reachability here is a successful ``initialize``.
-            profile.config.reachable = await self._mcp_discovery.check_reachable(profile)
+            profile.config.reachable = await self._mcp_discovery.check_reachable(profile, probe)
         else:
             try:
                 resp = await send_with_retry(
-                    lambda: self._spec_service.client(profile.hostname).get(profile.base_url, timeout=5),
+                    lambda: probe.get(profile.base_url, timeout=5),
                     method="GET",
                     policy=self._retry_policy,
                 )
@@ -584,7 +597,46 @@ class Registry:
         await self._backend.update_device_fields(
             profile.hostname, reachable=profile.config.reachable, last_check=profile.config.last_check
         )
+        if profile.config.reachable:
+            await self._observe_fingerprint(profile, probe)
         return profile.config.reachable
+
+    async def _observe_fingerprint(self, profile: DeviceProfile, probe: Any) -> None:
+        """Embedded mode's half of ADR-0015: what the probe just saw, compared and persisted.
+
+        The same comparison the distributed worker runs (``record_observation``). The
+        declared identity is the upstream's own statement: an MCP server's ``serverInfo``
+        from this probe, or an OpenAPI document's ``info`` from the last spec fetch.
+        Distributed mode never reaches this; its worker observes for itself.
+        """
+        if self._mode == "distributed":
+            return
+        seen = observation_from_client(probe)
+        observation = seen if seen is not None and seen.has_tls() else fp.Observation()
+        if profile.config.upstream_kind == "mcp":
+            declared = profile.declared_identity
+        else:
+            declared = declared_from_spec(profile.spec_data)
+        if declared:
+            observation = replace(observation, declared_name=declared[0], declared_version=declared[1])
+
+        async def write(**fields: Any) -> None:
+            await self.update_fingerprint_fields(profile.hostname, **fields)
+
+        await record_observation(write, profile.hostname, profile.config, observation)
+
+    async def update_fingerprint_fields(self, hostname: str, **fields: Any) -> None:
+        """Write fingerprint fields where they are read AND where they survive a restart.
+
+        Every fingerprint write — an observation, a registration pin or policy, an approval,
+        a trust record carried across a PUT — goes through here. In embedded mode the
+        live record and SQLite are separate, and SQLite used to be written only at
+        registration, so a pin or an approval was lost on restart: the next probe then
+        re-pinned silently, which is the very event a pin exists to catch.
+        """
+        await self._backend.update_device_fields(hostname, **fields)
+        if self._mode != "distributed" and self._store:
+            await self._store.update_fingerprint(hostname, fields)
 
     async def _health_check_one(self, profile: DeviceProfile) -> None:
         async with self._health_semaphore:

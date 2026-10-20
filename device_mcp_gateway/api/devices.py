@@ -342,7 +342,7 @@ async def _apply_register(data: dict, request: Request) -> DeviceMutationResult:
     )
 
     if expected_spki:
-        await reg._backend.update_device_fields(
+        await reg.update_fingerprint_fields(
             hostname,
             tls_spki_sha256=expected_spki,
             fingerprint_state=fp.STATE_PINNED,
@@ -354,7 +354,7 @@ async def _apply_register(data: dict, request: Request) -> DeviceMutationResult:
         device_cfg = await reg.get_device(hostname) or device_cfg
 
     if fingerprint_policy:
-        await reg._backend.update_device_fields(hostname, fingerprint_policy=fingerprint_policy)
+        await reg.update_fingerprint_fields(hostname, fingerprint_policy=fingerprint_policy)
         device_cfg = await reg.get_device(hostname) or device_cfg
 
     audit_request(request, "device.create", outcome=AUDIT_OUTCOME_SUCCESS, target=hostname)
@@ -439,7 +439,7 @@ async def _apply_update(hostname: str, data: dict, request: Request) -> DeviceMu
     # the very mechanism that stops an unrelated edit from dropping it.
     if requested_policy is not None:
         value = None if requested_policy is _CLEAR else requested_policy
-        await reg._backend.update_device_fields(hostname, fingerprint_policy=value)
+        await reg.update_fingerprint_fields(hostname, fingerprint_policy=value)
         # Re-read for the stored truth, keeping the pre-update record if the device has
         # vanished — a delete racing an update is not a reason to fail the update that
         # just succeeded.
@@ -737,7 +737,7 @@ async def approve_fingerprint(hostname: str, request: Request):
 
     previous = device.tls_spki_sha256
     fields = fp.approve(device.pending_tls_spki_sha256, time.time())
-    await reg._backend.update_device_fields(hostname, **fields)
+    await reg.update_fingerprint_fields(hostname, **fields)
 
     # Both values in the record: an audit entry saying only "approved" cannot answer the
     # question someone will actually ask later, which is what it changed FROM.

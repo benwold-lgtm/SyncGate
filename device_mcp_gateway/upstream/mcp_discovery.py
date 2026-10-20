@@ -351,22 +351,23 @@ class McpDiscoveryService:
         self._max_tools = config.get("max_upstream_tools", DEFAULT_MAX_OPERATIONS)
         self._timeout = config.get("discovery", {}).get("timeout", 10)
 
-    def client_for(self, profile: DeviceProfile) -> StreamableHttpClient:
+    def client_for(self, profile: DeviceProfile, http: Any = None) -> StreamableHttpClient:
+        """``http`` overrides the pooled client — the probe passes its fingerprint-capturing one."""
         return StreamableHttpClient(
             url=profile.base_url,
-            get_client=lambda: self._client_factory(profile.hostname),
+            get_client=(lambda: http) if http is not None else (lambda: self._client_factory(profile.hostname)),
             auth=profile.auth,
             timeout=self._timeout,
         )
 
-    async def check_reachable(self, profile: DeviceProfile) -> bool:
+    async def check_reachable(self, profile: DeviceProfile, http: Any = None) -> bool:
         """Reachability for an MCP upstream is a successful ``initialize``.
 
         The OpenAPI probe scores ``status_code < 500`` as reachable, which is wrong here: an
         MCP endpoint answers a bare GET with 405 or 404, so a dead or misconfigured upstream
         would read as healthy and its pod would be spawned against nothing.
         """
-        upstream = self.client_for(profile)
+        upstream = self.client_for(profile, http)
         try:
             info = await upstream.initialize()
         except Exception as exc:  # noqa: BLE001 — any failure means "not reachable"

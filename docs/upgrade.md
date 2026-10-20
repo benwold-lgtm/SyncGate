@@ -297,6 +297,17 @@ Single process, single SQLite file — there is no rolling story:
 Embedded mode keeps its documented single-operator fail-open defaults (warned, not gated)
 — no API-key/Redis gate applies.
 
+**Endpoint fingerprinting now runs in embedded mode** (ADR-0015, previously distributed-only).
+- **First probe:** every device is pinned on its first probe after the upgrade (trust on first
+  use). A later key change flags the device `pending_approval`.
+- **Under `enforce`:** that device's tool calls, resource reads and prompt fetches are refused
+  until someone approves the new key.
+- **Persistence:** pins, approvals and per-device `fingerprint_policy` now persist in SQLite.
+  Before this, they were lost on every restart, and a policy set at registration was silently
+  dropped.
+
+If you rely on `enforce`, check the fingerprint panel of each device after the upgrade.
+
 ---
 
 ## Secret-key rotation vs. version upgrade

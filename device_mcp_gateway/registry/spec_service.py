@@ -113,6 +113,8 @@ class SpecService:
         self._allow_private = resolve_allow_private(config)
         self._allowed_ports = resolve_allowed_ports(config)
         self._http_clients: dict[tuple, httpx.AsyncClient] = {}
+        # hostname → fingerprint-capturing probe client (see probe_client).
+        self._probe_clients: dict[str, httpx.AsyncClient] = {}
 
     def client(self, hostname: str | None) -> httpx.AsyncClient:
         """The outbound client for one device (also used by Registry reachability probes).
@@ -141,11 +143,39 @@ class SpecService:
         self._http_clients[key] = client
         return client
 
+    def probe_client(self, hostname: str) -> httpx.AsyncClient:
+        """A per-DEVICE client that captures the endpoint fingerprint (ADR-0015).
+
+        Not ``client()``: that one is pooled per TLS profile, so normally one client serves
+        every device, and the captured observation is "the last connection this client
+        saw". The embedded health loop probes devices concurrently, so reading it after
+        device A's probe could return device B's certificate — a false "key changed", and
+        under ``enforce`` a wrongful quarantine. One client per device makes the observation
+        attributable by construction. Same TLS profile and the same SSRF guard as
+        ``client()``.
+        """
+        existing = self._probe_clients.get(hostname)
+        if existing is not None and not existing.is_closed:
+            return existing
+        client = build_guarded_client(
+            verify=self._tls.for_device(hostname),
+            allow_private=self._allow_private,
+            allowed_ports=self._allowed_ports,
+            capture_fingerprint=True,
+        )
+        self._probe_clients[hostname] = client
+        return client
+
+    async def drop_probe_client(self, hostname: str) -> None:
+        client = self._probe_clients.pop(hostname, None)
+        if client is not None and not client.is_closed:
+            await client.aclose()
+
     def invalidate(self, base_url: str) -> None:
         self._cache.invalidate(base_url)
 
     async def aclose(self) -> None:
-        for client in list(self._http_clients.values()):
+        for client in [*self._http_clients.values(), *self._probe_clients.values()]:
             if not client.is_closed:
                 await client.aclose()
         self._http_clients.clear()

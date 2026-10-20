@@ -13,7 +13,13 @@ import aiosqlite
 from loguru import logger
 
 from .base import AbstractDeviceStore
+from device_mcp_gateway.security.fingerprint import TRUST_FIELDS
 from device_mcp_gateway.shared.crypto import CredentialCodec
+
+# What a device's endpoint fingerprint is made of, as persisted (ADR-0015): the trust record
+# plus the self-reported declared identity, which is observation rather than trust but is
+# compared across restarts all the same.
+PERSISTED_FINGERPRINT_FIELDS = (*TRUST_FIELDS, "declared_name", "declared_version")
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS devices (
@@ -185,6 +191,20 @@ class SqliteDeviceStore(AbstractDeviceStore):
             ) as cursor:
                 rows = await cursor.fetchall()
         return [(row["hostname"], row["auth_config"]) for row in rows]
+
+    async def update_fingerprint(self, hostname: str, fields: dict[str, Any]) -> None:
+        # Column names come from this allowlist only, never from the caller, so building the
+        # SET clause from them cannot inject SQL.
+        cols = [c for c in PERSISTED_FINGERPRINT_FIELDS if c in fields]
+        if not cols:
+            return
+        assignments = ", ".join(f"{c} = ?" for c in cols)
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                f"UPDATE devices SET {assignments} WHERE hostname = ?",  # nosec B608
+                (*[fields[c] for c in cols], hostname),
+            )
+            await db.commit()
 
     async def update_credentials(self, hostname: str, auth_config: dict[str, Any]) -> None:
         """Re-encrypt and persist just a device's credential blob, leaving the rest of the

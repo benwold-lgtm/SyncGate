@@ -35,6 +35,7 @@ from device_mcp_gateway.core.translator import manifest_to_dict
 from device_mcp_gateway.credentials.resolver import ResolverError
 from device_mcp_gateway.security.mtls import TlsProfiles
 from device_mcp_gateway.security import fingerprint as fp
+from device_mcp_gateway.security.fingerprint_record import declared_from_spec, record_observation
 from device_mcp_gateway.security.url_policy import build_guarded_client, observation_from_client
 from device_mcp_gateway.shared.registry_backend import AbstractRegistryBackend
 from device_mcp_gateway.shared.keys import KEYS
@@ -395,51 +396,18 @@ class WorkerHealthLoop:
     async def _update_fingerprint(self, hostname: str, cfg: Any) -> None:
         """Compare the just-observed fingerprint with the pinned one and persist any change.
 
-        Never raises: fingerprinting is a diagnostic layered onto the health loop, and a
-        failure here must not stop reachability or spec polling for the device.
+        The comparison and its logging are shared with embedded mode
+        (``security.fingerprint_record``); this worker contributes what it observed.
         """
-        try:
-            seen = self._last_seen.pop(hostname, None) or fp.Observation()
-            declared = self._last_declared.pop(hostname, None)
-            if declared:
-                seen = replace(seen, declared_name=declared[0], declared_version=declared[1])
-            if seen.is_empty():
-                return
+        seen = self._last_seen.pop(hostname, None) or fp.Observation()
+        declared = self._last_declared.pop(hostname, None)
+        if declared:
+            seen = replace(seen, declared_name=declared[0], declared_version=declared[1])
 
-            stored = fp.Observation(
-                tls_spki_sha256=cfg.tls_spki_sha256,
-                tls_cert_sha256=cfg.tls_cert_sha256,
-                tls_issuer=cfg.tls_issuer,
-                tls_not_after=cfg.tls_not_after,
-                declared_name=cfg.declared_name,
-                declared_version=cfg.declared_version,
-            )
-            verdict, fields = fp.plan_update(
-                stored,
-                cfg.fingerprint_state,
-                cfg.pending_tls_spki_sha256,
-                seen,
-                now=time.time(),
-            )
-            if not fields:
-                return
+        async def write(**fields: Any) -> None:
             await self._backend.update_device_fields(hostname, **fields)
 
-            if verdict in fp.NEEDS_APPROVAL:
-                # WARNING, not an error: under the default policy the device keeps working
-                # and a human decides. The message names both keys because an operator
-                # approving this needs to see what it is changing FROM, and the audit
-                # record is what carries the accountability (ADR-0015 §6).
-                logger.warning(
-                    f"Endpoint fingerprint CHANGED for {hostname} ({verdict}): "
-                    f"pinned key {(cfg.tls_spki_sha256 or '')[:16]}... now presenting "
-                    f"{(seen.tls_spki_sha256 or '')[:16]}... — device is flagged "
-                    "pending_approval; approve or remove it"
-                )
-            else:
-                logger.debug(f"Fingerprint for {hostname}: {verdict}")
-        except Exception:
-            logger.exception(f"Fingerprint comparison failed for {hostname}")
+        await record_observation(write, hostname, cfg, seen)
 
     async def _check_reachability(self, cfg: Any) -> bool:
         if getattr(cfg, "upstream_kind", "openapi") == "mcp":
@@ -513,15 +481,9 @@ class WorkerHealthLoop:
         Never raises on a malformed document — a spec that survived fetching but carries a
         junk ``info`` block must not break the health loop for that device.
         """
-        info = spec.get("info") if isinstance(spec, dict) else None
-        if not isinstance(info, dict):
-            return
-        title, version = info.get("title"), info.get("version")
-        if title or version:
-            self._last_declared[hostname] = (
-                str(title) if title else None,
-                str(version) if version else None,
-            )
+        declared = declared_from_spec(spec)
+        if declared:
+            self._last_declared[hostname] = declared
 
     async def _fetch_spec(self, cfg: Any) -> dict | None:
         # ADR-0020 §4b / LR-46: ask the one choke point first. A device carrying a curated
