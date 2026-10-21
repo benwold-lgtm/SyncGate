@@ -171,6 +171,16 @@ def test_a_dry_run_predicts_the_real_run_and_writes_nothing(monkeypatch, tmp_pat
     assert [d["hostname"] for d in dry["devices"]] == [d["hostname"] for d in wet["devices"]]
 
 
+def test_a_preview_says_fleet_handles_are_not_carried(monkeypatch, tmp_path):
+    """ADR-0027 §5 follow-up: until an archive carries fleet handles, a restore must say so —
+    otherwise every configured fleet URL answering 404 afterwards reads as a broken restore."""
+    client = _client(monkeypatch, tmp_path, secret_key=Fernet.generate_key().decode())
+    _register(client, "alpha")
+    archive = client.get("/v1/admin/backup", headers=_auth()).json()
+    preview = _restore(client, archive).json()
+    assert any("fleet handles" in note for note in preview["not_carried"])
+
+
 def test_the_preview_route_never_writes(monkeypatch, tmp_path):
     """The destructive direction is not reachable through the preview route at all.
 

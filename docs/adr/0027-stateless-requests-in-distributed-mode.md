@@ -1,6 +1,6 @@
 # ADR-0027: Stateless requests in distributed mode — results route per request, fleets are handles
 
-- **Status:** Accepted (merged 2026-10-16, #226). §1–§4 built in 0.4.0 (Workstream B PR 5, see the implementation note); §5 (fleet handles) in PR 6
+- **Status:** Accepted (merged 2026-10-16, #226). Built in 0.4.0: §1–§4 in Workstream B PR 5, §5 in PR 6 (see the implementation notes)
 - **Date:** 2026-10-16
 - **Related:** [ADR-0002](0002-redis-control-plane.md) (extended), [ADR-0005](0005-at-least-once-with-idempotency-guard.md)
   (unchanged — see §4), [ADR-0008](0008-fleet-sessions.md) (partly superseded — see §5),
@@ -223,3 +223,27 @@ is not executed, so a non-idempotent call cannot take effect with its result dis
 
 The other direction (a new gateway beside an old worker) is covered as §1 says: a stateless
 entry also carries `session_id = req:{request_id}`, and the gateway waits on both keys.
+
+## Implementation note (2026-10-21, Workstream B PR 6): fleet handles
+
+§5 is built as decided — `POST`/`GET`/`DELETE /v1/fleets`, `POST /v1/fleet/{handle}/mcp` in both
+eras, 404 for anyone but the owner, Redis or SQLite storage — with three additions and one
+difference:
+
+- **Unregistered devices are refused at mint** (400 naming them), rather than skipped. A typo
+  would otherwise produce a fleet that is silently one device short for its whole life.
+  Membership is still re-resolved on every request, so a member deregistered *later* is
+  skipped then, as §5 says.
+- **A per-principal cap on handles** (`registry.fleet_handles_per_principal`, default 100).
+  Handles are persistent configuration; a token minting in a loop would otherwise grow the
+  store without bound.
+- **`?devices=` responses carry `Deprecation: true`** and a `Link` to `/v1/fleets`, and a
+  stateless request to it is a 400 (`-32600`) whose message names `POST /v1/fleets`.
+- **The aggregated `tools/list` is not cached.** §5 called for a per-handle cache keyed on the
+  members' manifest revisions. Each request rebuilds it from the members' cached manifests
+  instead — the same work the handshake fleet already did per request — so an F-41 change or a
+  deregistration is reflected on the very next request, and there is no cache to invalidate.
+  A cache stays an optimisation available if a large fleet ever shows the cost.
+
+Backup: the restore report's new `not_carried` list says fleet handles are not in an archive,
+as §5's follow-up requires until they are.

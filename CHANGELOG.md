@@ -58,6 +58,28 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
     unique to the call. The gateway waits on both, and the shim is retired in the release after
     the handshake era.
 
+- **Fleet handles** ([ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md) §5). A
+  fleet becomes a server-minted handle with a fixed device set, bound to the principal who
+  minted it.
+  - `POST /v1/fleets` with `{"devices": [...]}` returns `flt_…` and its URL. `GET /v1/fleets`
+    lists the caller's own, and `DELETE /v1/fleets/{handle}` removes one. All need
+    `tools:call`, and minting has the same device cap as a fleet session.
+  - `POST /v1/fleet/{handle}/mcp` serves **both eras**: a stateless client names the fleet by
+    its URL, and `initialize` there opens a handshake session over the handle's devices.
+  - Anyone but the owner gets **404**, so the endpoint does not reveal which handles exist. No
+    request can add a device; only minting can.
+  - Handles persist: in Redis in distributed mode, and in SQLite beside the devices table in
+    embedded mode.
+  - A backup archive does not carry them yet, and a restore says so in its new `not_carried`
+    list.
+
+### Deprecated
+
+- **`/v1/fleet/mcp?devices=`** keeps serving the handshake era through 0.4.x, with
+  `Deprecation: true` on its responses. A stateless request to it is refused with a 400 that
+  points at `POST /v1/fleets`, because this era has no `initialize` to fix the fleet on. It is
+  removed together with the handshake era.
+
 ### Changed
 
 - **One `initialize` builder** (`core/protocol.py`) replaces the four hand-built copies in the
