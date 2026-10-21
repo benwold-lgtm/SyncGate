@@ -257,3 +257,37 @@ def test_prompts_get_is_quarantined_with_the_other_use_paths():
 def test_manifest_round_trip_keeps_discovered_metadata():
     m = McpManifest(server_name="s", server_version="1", hostname="h", metadata={"discovered": {"resources": True}})
     assert _dict_to_manifest(manifest_to_dict(m)).metadata["discovered"] == {"resources": True}
+
+
+# --- ADR-0010 in the stateless era ---------------------------------------------------------
+
+
+def test_a_proxied_schema_loses_its_header_annotations_and_nothing_else():
+    """A modern client mirrors an `x-mcp-header` argument into an HTTP header; the proxy path
+    has no header channel (ADR-0010), so the annotation must not reach a client."""
+    from device_mcp_gateway.upstream.mcp_discovery import strip_header_annotations
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "region": {"type": "string", "x-mcp-header": "Region"},
+            # A PROPERTY named x-mcp-header is the upstream's business and must survive.
+            "x-mcp-header": {"type": "string", "default": {"x-mcp-header": "data, not a schema"}},
+            "nested": {"type": "object", "properties": {"zone": {"type": "integer", "x-mcp-header": "Zone"}}},
+        },
+        "anyOf": [{"properties": {"a": {"type": "string", "x-mcp-header": "A"}}}],
+    }
+    out = strip_header_annotations(schema)
+    assert "x-mcp-header" not in out["properties"]["region"]
+    assert "x-mcp-header" not in out["properties"]["nested"]["properties"]["zone"]
+    assert "x-mcp-header" not in out["anyOf"][0]["properties"]["a"]
+    assert out["properties"]["x-mcp-header"]["default"] == {"x-mcp-header": "data, not a schema"}
+    assert schema["properties"]["region"]["x-mcp-header"] == "Region"  # the input is not mutated
+
+
+def test_the_built_manifest_carries_the_stripped_schema():
+    tools = [
+        {"name": "t", "inputSchema": {"type": "object", "properties": {"r": {"type": "string", "x-mcp-header": "R"}}}}
+    ]
+    [tool] = build_proxy_manifest("h", tools).tools
+    assert tool.schema == {"type": "object", "properties": {"r": {"type": "string"}}}

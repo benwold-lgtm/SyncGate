@@ -60,12 +60,19 @@ mock_target_app = FastAPI(title="Mock IoT Sensor API", version="1.0.0")
 # event hook that stamps the id, so it cannot see it — the only honest place to look is
 # the far end.
 last_device_request_headers: dict[str, str] = {}
+# Every X-Request-Id the device has seen, in arrival order. "The last request" alone is a race:
+# any other device sharing this mock (a health probe, another module's pod) can land between
+# a test's call and its assertion and overwrite it.
+device_request_ids: list[str] = []
 
 
 @mock_target_app.middleware("http")
 async def _record_request_headers(request: Request, call_next):
     last_device_request_headers.clear()
     last_device_request_headers.update({k.lower(): v for k, v in request.headers.items()})
+    if "x-request-id" in last_device_request_headers:
+        device_request_ids.append(last_device_request_headers["x-request-id"])
+        del device_request_ids[:-500]  # bounded: it lives for the whole session
     return await call_next(request)
 
 

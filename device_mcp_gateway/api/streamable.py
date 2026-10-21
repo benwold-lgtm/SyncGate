@@ -42,6 +42,7 @@ from device_mcp_gateway.api.exchange import (
     ResultExchange,
 )
 from device_mcp_gateway.audit import audit_log
+from device_mcp_gateway.core import protocol
 from device_mcp_gateway.ratelimit import rate_limit, rate_limit_principal
 from device_mcp_gateway.rbac import SCOPE_TOOLS_CALL, require_scope
 from device_mcp_gateway.registry.server import Registry
@@ -165,6 +166,9 @@ async def device_streamable_post(hostname: str, request: Request, response: Resp
     _subject = _principal.subject if _principal else "unknown"
     _rid = getattr(request.state, "request_id", "-")
 
+    if protocol.is_modern_request(request.headers, payload):
+        return await _serve_modern(request, hostname, payload, subject=_subject, rid=_rid)
+
     session_id = request.headers.get(SESSION_HEADER)
 
     if method == "initialize":
@@ -205,21 +209,7 @@ async def device_streamable_post(hostname: str, request: Request, response: Resp
         # 504, not 500: the call may still be running upstream, so this is not a failed tool
         # call and a client is entitled to treat it as retryable at its own discretion.
         raise HTTPException(status_code=504, detail=str(exc) or "Timed out awaiting device response") from exc
-    _dur = (time.perf_counter() - _t) * 1000
-
-    _status = "error" if isinstance(result, dict) and "error" in result else "ok"
-    metrics.tool_calls_total.labels(hostname=hostname, method=method or "?", status=_status).inc()
-    metrics.tool_call_duration_seconds.labels(hostname=hostname).observe(_dur / 1000.0)
-    audit_log(
-        "tool dispatch",
-        hostname=hostname,
-        subject=_subject,
-        method=method or "?",
-        status=_status,
-        duration_ms=round(_dur, 1),
-        rid=_rid,
-        transport="streamable-http",
-    )
+    _record_dispatch(hostname, method, result, _t, subject=_subject, rid=_rid, era="handshake")
 
     if result is None:
         # A notification (no id) has no response. 202 with an empty body is what the
@@ -233,6 +223,100 @@ async def device_streamable_post(hostname: str, request: Request, response: Resp
         media_type="application/json",
         headers=dict(response.headers),
     )
+
+
+def _record_dispatch(
+    hostname: str, method: str, result: Any, started: float, *, subject: str, rid: str, era: str
+) -> None:
+    """Metrics and the audit line for one dispatched message, whichever era carried it."""
+    dur_ms = (time.perf_counter() - started) * 1000
+    status = "error" if isinstance(result, dict) and "error" in result else "ok"
+    metrics.tool_calls_total.labels(hostname=hostname, method=method or "?", status=status).inc()
+    metrics.tool_call_duration_seconds.labels(hostname=hostname).observe(dur_ms / 1000.0)
+    audit_log(
+        "tool dispatch",
+        hostname=hostname,
+        subject=subject,
+        method=method or "?",
+        status=status,
+        duration_ms=round(dur_ms, 1),
+        rid=rid,
+        transport="streamable-http",
+        era=era,
+    )
+
+
+def _modern_json(body: dict[str, Any]) -> Response:
+    return Response(content=json.dumps(body), media_type="application/json", status_code=protocol.http_status_for(body))
+
+
+def _server_identity(request: Request, hostname: str) -> tuple[str, str]:
+    """The name and version this device's MCP server presents — what ``initialize`` would say."""
+    profile = request.app.state.registry.get_profile(hostname)
+    manifest = profile.pod.manifest if profile and profile.pod else None
+    if manifest is None:
+        return f"mcp-{hostname}", "unknown"
+    return manifest.server_name, manifest.server_version
+
+
+async def _serve_modern(request: Request, hostname: str, payload: dict[str, Any], *, subject: str, rid: str):
+    """One stateless (2026-07-28) request: no handshake, no session, the answer on this response.
+
+    Nothing here mints or reads a session. Principal binding (F-37) has no subject on this
+    path — there is no state between requests to bind — so each request stands on its own
+    authentication and scope check, which the route already applied (ADR-0027 §3).
+    """
+    msg_id = payload.get("id")
+    version = request.headers.get(protocol.PROTOCOL_VERSION_HEADER)
+
+    if "id" not in payload:
+        # A notification. This era defines none from client to server over HTTP, and there is
+        # no cross-request state for one to act on, so it is acknowledged and dropped — after
+        # the one check that applies to it: is the version it names served at all.
+        if version not in protocol.MODERN_PROTOCOL_VERSIONS:
+            return _modern_json(protocol.unsupported_version(None, version, protocol.MODERN_PROTOCOL_VERSIONS))
+        return Response(status_code=202)
+
+    if request.app.state.mode == "distributed":
+        # Distributed mode routes stateless results from 0.4.0 Workstream B PR 5 (ADR-0027 §1).
+        # Until then, -32022 naming the handshake versions is the answer an auto-negotiating
+        # client falls back from cleanly: it reads as "this server speaks the handshake".
+        return _modern_json(protocol.unsupported_version(msg_id, version, protocol.HANDSHAKE_PROTOCOL_VERSIONS))
+
+    for header in (protocol.PROTOCOL_VERSION_HEADER, protocol.METHOD_HEADER, protocol.NAME_HEADER):
+        if len(request.headers.getlist(header)) > 1:
+            # First-copy and last-copy readers would disagree about where this is going.
+            return _modern_json(
+                protocol.rpc_failure(msg_id, protocol.HEADER_MISMATCH, f"{header} header appears more than once")
+            )
+    refusal = protocol.classify_modern(payload, request.headers)
+    if refusal is not None:
+        return _modern_json(refusal)
+
+    method = payload.get("method", "")
+    if method not in protocol.MODERN_DEVICE_METHODS:
+        return _modern_json(protocol.rpc_failure(msg_id, protocol.METHOD_NOT_FOUND, "Method not found", method))
+
+    server_name, server_version = _server_identity(request, hostname)
+    if method == "server/discover":
+        result: dict[str, Any] | None = {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": protocol.discover_result(
+                server_name=server_name, server_version=server_version, capabilities=protocol.DEVICE_CAPABILITIES
+            ),
+        }
+    else:
+        _t = time.perf_counter()
+        try:
+            result = await _exchange_for(request).exchange(hostname, payload, session_id="", subject=subject, rid=rid)
+        except ExchangeUnavailable as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        _record_dispatch(hostname, method, result, _t, subject=subject, rid=rid, era="stateless")
+    shaped = protocol.modern_response(method, result, server_name=server_name, server_version=server_version)
+    if shaped is None:
+        return Response(status_code=202)
+    return _modern_json(shaped)
 
 
 @router.get("/devices/{hostname}/mcp", dependencies=[Depends(require_scope(SCOPE_TOOLS_CALL))])

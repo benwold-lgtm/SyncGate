@@ -42,7 +42,23 @@ no worker, internal fault). Shape:
 | `-32002` | `duplicate_suppressed` | A duplicate delivery of a non-idempotent call was suppressed (F-08). | The call was redelivered (a worker died/shed the device mid-flight) after a prior attempt had begun; re-running a non-idempotent operation could double-apply, so it was not retried. Retry explicitly if the operation is safe to repeat. |
 
 `-32601` and `-32602` are standard JSON-RPC 2.0 codes; `-32000`/`-32001`/`-32002` are in the
-JSON-RPC server-defined range (`-32000…-32099`).
+JSON-RPC server-defined range. MCP `2026-07-28` reserves `-32020…-32099` of that range for the
+spec itself, and the gateway's own codes sit below it.
+
+### Stateless-era refusals (`2026-07-28`)
+
+A request in the stateless era (an `MCP-Protocol-Version` header naming a modern revision, or a
+`_meta` envelope) is checked before it reaches a device, in this order. These come back as the
+**response to the POST**, with the HTTP status shown, and carry no `error.data.reason`: they are
+the protocol's own codes, and the SDK's table decides the status.
+
+| Code | HTTP | Meaning | Likely cause |
+|------|------|---------|--------------|
+| `-32602` | 400 | The `_meta` envelope is missing or incomplete. | The request has no `io.modelcontextprotocol/protocolVersion` or `…/clientCapabilities` in `params._meta`. |
+| `-32020` | 400 | **Header mismatch.** A routing header disagrees with the body. | `MCP-Protocol-Version` missing or different from the envelope's, `Mcp-Method` ≠ `method`, `Mcp-Name` ≠ the tool, prompt or URI, or one of them sent twice. |
+| `-32022` | 400 | **Unsupported protocol version.** `error.data` is `{"supported": [...], "requested": "..."}`. | The client asked for a revision the gateway does not serve. An auto-negotiating client uses `supported` to retry or fall back. |
+| `-32601` | 404 | The method does not exist in this era. | `initialize`, `ping`, `logging/setLevel` and `resources/subscribe` were removed in `2026-07-28`. |
+| `-32602` | 400 | An unknown tool name. | In this era `-32601` is a 404, which a client may read as "this endpoint has no `tools/call`", so an unknown *tool* is answered as invalid params. |
 
 ---
 

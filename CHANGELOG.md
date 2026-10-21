@@ -18,6 +18,29 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   against, so the gateway no longer claims to speak them. `2025-11-25` is now the preferred
   version, which is what an SDK-default client offers.
 
+### Added
+
+- **The stateless era, `2026-07-28`, on device endpoints in embedded mode** (Workstream B PR 4).
+  `POST /v1/devices/{hostname}/mcp` serves both eras on one URL. A request whose
+  `MCP-Protocol-Version` header names a modern revision, or whose `params._meta` carries the
+  envelope, is served with no handshake and no session. Anything else takes the handshake path,
+  unchanged.
+  - **`server/discover`** is answered with the modern versions, the device's capabilities and
+    its server identity.
+  - **Every result** carries `resultType` and the `serverInfo` stamp in `_meta`. Lists,
+    discovery and `resources/read` carry `ttlMs`/`cacheScope` (`private`; a read is `0`,
+    because it is live device state).
+  - **Refusals** follow the SDK's ladder and status table: an incomplete envelope is `-32602`,
+    a routing header that disagrees with the body is `-32020`, an unserved version is `-32022`
+    naming what is served, and a method the era removed (`initialize`, `ping`, …) is `-32601`
+    with a 404. See [docs/error-catalog.md](docs/error-catalog.md).
+  - **Distributed mode** answers a stateless request with `-32022` naming the handshake
+    versions until PR 5 routes stateless results. An auto-negotiating client reads that as
+    "speak the handshake" and falls back cleanly.
+  - **A proxied tool's `x-mcp-header` annotations are stripped** from its schema. A modern
+    client mirrors an annotated argument into an HTTP header, and the proxy path has no header
+    channel (ADR-0010).
+
 ### Changed
 
 - **One `initialize` builder** (`core/protocol.py`) replaces the four hand-built copies in the
