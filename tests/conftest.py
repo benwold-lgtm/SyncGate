@@ -27,6 +27,18 @@ os.environ.setdefault("MCP_ALLOW_PRIVATE_TARGETS", "true")
 TEST_REDIS_URL = os.getenv("MCP_TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_upstream_era_cache():
+    """The upstream client caches each URL's era for the process (roadmap trap 3). Tests
+    reuse URLs like http://up/mcp for different stubs, so one test's verdict must not
+    decide the next one's."""
+    from device_mcp_gateway.upstream.mcp_client import forget_era
+
+    forget_era()
+    yield
+    forget_era()
+
+
 @pytest_asyncio.fixture
 async def real_redis():
     """Async Redis client against a real server, for `integration` tests.

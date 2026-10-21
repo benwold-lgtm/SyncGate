@@ -291,3 +291,20 @@ def test_the_built_manifest_carries_the_stripped_schema():
     ]
     [tool] = build_proxy_manifest("h", tools).tools
     assert tool.schema == {"type": "object", "properties": {"r": {"type": "string"}}}
+
+
+def test_a_modern_upstreams_header_bound_tool_is_not_offered():
+    """It would fail every call: a modern upstream requires the Mcp-Param-* header, and the
+    proxy path sends none (ADR-0010). A handshake-era upstream has no such rule, so there the
+    tool is kept, with the annotation stripped."""
+    tools = [
+        {
+            "name": "bound",
+            "inputSchema": {"type": "object", "properties": {"r": {"type": "string", "x-mcp-header": "R"}}},
+        },
+        {"name": "plain", "inputSchema": {"type": "object", "properties": {"r": {"type": "string"}}}},
+    ]
+    modern = build_proxy_manifest_from("h", {"tools": tools, "era": "modern"})
+    legacy = build_proxy_manifest_from("h", {"tools": tools, "era": "handshake"})
+    assert [t.name for t in modern.tools] == ["plain"]
+    assert sorted(t.name for t in legacy.tools) == ["bound", "plain"]
