@@ -20,7 +20,7 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ### Added
 
-- **The stateless era, `2026-07-28`, on device endpoints in embedded mode** (Workstream B PR 4).
+- **The stateless era, `2026-07-28`, on device endpoints, in both modes** (Workstream B PRs 4–5).
   `POST /v1/devices/{hostname}/mcp` serves both eras on one URL. A request whose
   `MCP-Protocol-Version` header names a modern revision, or whose `params._meta` carries the
   envelope, is served with no handshake and no session. Anything else takes the handshake path,
@@ -34,12 +34,29 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
     a routing header that disagrees with the body is `-32020`, an unserved version is `-32022`
     naming what is served, and a method the era removed (`initialize`, `ping`, …) is `-32601`
     with a 404. See [docs/error-catalog.md](docs/error-catalog.md).
-  - **Distributed mode** answers a stateless request with `-32022` naming the handshake
-    versions until PR 5 routes stateless results. An auto-negotiating client reads that as
-    "speak the handshake" and falls back cleanly.
   - **A proxied tool's `x-mcp-header` annotations are stripped** from its schema. A modern
     client mirrors an annotated argument into an HTTP header, and the proxy path has no header
     channel (ADR-0010).
+
+- **Distributed mode routes each stateless result by its own request**
+  ([ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md) §1–§2). A session-bound
+  call's result goes to its session's stream, as before. A stateless call names its own
+  single-request stream, `reply:{request_id}` (`MAXLEN 1`, short TTL, deleted once read), as
+  `reply_to` on the stream entry. The worker publishes to that and nowhere else. The client's
+  JSON-RPC `id` is echoed back and used for nothing else, so two callers who both number from
+  `1` cannot receive each other's results. The new test shows that with the old routing they
+  did.
+  - **The worker refuses an entry with nowhere to answer before running it.** No route at all
+    is dead-lettered `no reply route`; a `reply_to` naming anything but a reply or session
+    stream is dead-lettered `invalid reply route`. Nothing is ever published to the shared
+    `session::results`.
+  - **Error results reach a stateless caller:** fingerprint quarantine, no pod, a suppressed
+    duplicate and a dispatch error are answered on the reply stream instead of timing out.
+  - **Rolling upgrades** are safe in both directions. A new worker serves an old gateway's
+    entries (session, no `reply_to`) on their session. A new gateway beside an old worker also
+    sets `session_id = req:{request_id}`, which the old worker turns into a key that is still
+    unique to the call. The gateway waits on both, and the shim is retired in the release after
+    the handshake era.
 
 ### Changed
 

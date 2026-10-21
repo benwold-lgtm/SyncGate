@@ -302,6 +302,7 @@ class AbstractRegistryBackend(ABC):
         rid: str = "",
         traceparent: str = "",
         subject: str = "",
+        reply_to: str = "",
     ) -> None:
         """Push a tool-call message onto the device's Redis Stream.
 
@@ -313,7 +314,9 @@ class AbstractRegistryBackend(ABC):
         the authenticated principal that issued the call (F-30 residual): it
         rides the stream so the worker's execution-audit record carries the same
         actor attribution the gateway logged at dispatch, extending the audit
-        trail past the gateway edge.
+        trail past the gateway edge. `reply_to` is the one stream the worker may publish
+        the result to (ADR-0027 §1): a session's results stream, or a stateless call's own
+        reply stream.
         """
         ...
 
@@ -425,6 +428,7 @@ class MemoryRegistryBackend(AbstractRegistryBackend):
         rid: str = "",
         traceparent: str = "",
         subject: str = "",
+        reply_to: str = "",
     ) -> None:
         pass  # no-op; embedded mode routes calls in-process
 
@@ -621,6 +625,7 @@ class RedisRegistryBackend(AbstractRegistryBackend):
         rid: str = "",
         traceparent: str = "",
         subject: str = "",
+        reply_to: str = "",
     ) -> None:
         await self._r.xadd(
             KEYS.device_calls(hostname),
@@ -631,6 +636,7 @@ class RedisRegistryBackend(AbstractRegistryBackend):
                 "rid": rid,
                 "traceparent": traceparent,
                 "subject": subject,
+                "reply_to": reply_to,
                 "message": json.dumps(message),
             },
             maxlen=_CALL_STREAM_MAXLEN,

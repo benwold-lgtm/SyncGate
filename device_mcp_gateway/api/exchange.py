@@ -25,6 +25,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from device_mcp_gateway.shared.keys import KEYS
+
 DEFAULT_EXCHANGE_TIMEOUT = 30.0
 
 
@@ -112,6 +114,14 @@ class DistributedResultExchange(ResultExchange):
     taken **before** publishing, so a worker fast enough to answer between the two cannot
     have its result missed. Waiting first and publishing second would be the obvious
     arrangement and would lose exactly those calls.
+
+    **A stateless call (empty ``session_id``) takes a different route** (ADR-0027 §1). There
+    is no session to name a results stream, and the shared ``session::results`` an empty id
+    would produce is a cross-caller disclosure. So the call names its own single-request
+    stream, ``reply:{request_id}``, as ``reply_to``, and waits on it from the start: nothing
+    else writes there, so there is no cursor to take and nothing to correlate. For one
+    release the entry also carries ``session_id = req:{request_id}``, which an older worker,
+    which ignores ``reply_to``, turns into a results key that is still unique to the call.
     """
 
     def __init__(self, backend: Any, session_router: Any, gateway_id: str, config: dict[str, Any]) -> None:
@@ -146,8 +156,17 @@ class DistributedResultExchange(ResultExchange):
         msg_id = payload.get("id")
         request_id = str(uuid.uuid4())
 
-        # Cursor first — see the class docstring. A notification skips this entirely.
-        cursor = "0-0" if msg_id is None else await self._sessions.results_cursor(session_id)
+        stateless = not session_id
+        if stateless:
+            reply_to = KEYS.reply(request_id)
+            # The one-release shim for an older worker (ADR-0027 §1): unique to this call.
+            wire_session = f"req:{request_id}"
+            cursor = "0-0"
+        else:
+            reply_to = KEYS.session_results(session_id)
+            wire_session = session_id
+            # Cursor first — see the class docstring. A notification skips this entirely.
+            cursor = "0-0" if msg_id is None else await self._sessions.results_cursor(session_id)
 
         with tracing.start_span(
             "mcp.tool_dispatch",
@@ -157,18 +176,22 @@ class DistributedResultExchange(ResultExchange):
             await self._backend.publish_tool_call(
                 hostname=hostname,
                 request_id=request_id,
-                session_id=session_id,
+                session_id=wire_session,
                 gateway_id=self._gateway_id,
                 message=payload,
                 rid=rid,
                 traceparent=carrier.get("traceparent", ""),
                 subject=subject,
+                reply_to=reply_to,
             )
 
         if msg_id is None:
             return None  # a notification has no answer to wait for
 
-        result = await self._sessions.await_result(session_id, msg_id, cursor=cursor, timeout=timeout)
+        if stateless:
+            result = await self._sessions.await_reply([reply_to, KEYS.session_results(wire_session)], timeout=timeout)
+        else:
+            result = await self._sessions.await_result(session_id, msg_id, cursor=cursor, timeout=timeout)
         if result is None:
             metrics.tool_call_timeouts_total.labels(hostname=hostname).inc()
             raise ExchangeTimeout(
