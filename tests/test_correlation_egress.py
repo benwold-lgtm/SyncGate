@@ -35,7 +35,7 @@ from device_mcp_gateway.pods.device_pod import DevicePod
 from device_mcp_gateway.shared.registry_backend import RedisRegistryBackend
 from device_mcp_gateway.worker.runner import DeviceWorker
 
-from tests.conftest import last_device_request_headers
+from tests.conftest import device_request_ids
 
 HOST = "dev1"
 
@@ -294,7 +294,7 @@ def test_the_device_sees_the_id_the_caller_was_given(client, mock_target_url):
             if line == "":
                 if event_name == "endpoint" and "session_id=" in data_payload:
                     session_id = data_payload.split("session_id=")[-1]
-                    last_device_request_headers.clear()
+                    device_request_ids.clear()
                     send = client.post(
                         f"/v1/devices/{hostname}/messages?session_id={session_id}",
                         json={
@@ -321,6 +321,6 @@ def test_the_device_sees_the_id_the_caller_was_given(client, mock_target_url):
 
     assert posted, "tool call was never sent"
     # …and the device's half. Same value, no gateway-side translation.
-    assert last_device_request_headers.get("x-request-id") == "rid-end-to-end"
+    assert "rid-end-to-end" in device_request_ids
 
     client.delete(f"/v1/devices/{hostname}")

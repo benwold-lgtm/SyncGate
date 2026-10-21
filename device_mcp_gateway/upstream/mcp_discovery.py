@@ -87,6 +87,59 @@ def _declared_from_server_info(init_result: dict[str, Any]) -> tuple[str | None,
     )
 
 
+# JSON Schema keywords whose value is a schema, a list of schemas, or a map of name → schema.
+# `properties` is the map whose KEYS are property names, so it is walked without touching them.
+_SCHEMA_ONE = frozenset(
+    {
+        "items",
+        "contains",
+        "unevaluatedItems",
+        "additionalProperties",
+        "propertyNames",
+        "unevaluatedProperties",
+        "not",
+        "if",
+        "then",
+        "else",
+        "contentSchema",
+    }
+)
+_SCHEMA_LIST = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+_SCHEMA_MAP = frozenset({"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"})
+
+
+def strip_header_annotations(schema: Any) -> Any:
+    """A copy of a proxied tool's input schema with every ``x-mcp-header`` annotation removed.
+
+    In the stateless era a client mirrors an annotated argument into an ``Mcp-Param-*`` HTTP
+    header. ADR-0010 gives the proxy path no header channel, permanently: on a proxied server
+    the upstream would choose the header *name* as well as the model choosing the value, on a
+    request carrying the device's credentials. The gateway never forwards such a header, so
+    advertising the annotation would only invite clients to send headers it then has to
+    validate against a schema the upstream wrote. Stripping it means a conforming client sends
+    none.
+
+    Only the annotation is removed — at schema positions, never a *property* that happens to
+    be named ``x-mcp-header``. Instance data (``default``, ``examples``, ``const``, ``enum``)
+    is not entered, and ``$ref`` is not followed, so this terminates on any finite value.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "x-mcp-header":
+            continue
+        if key in _SCHEMA_ONE:
+            out[key] = strip_header_annotations(value)
+        elif key in _SCHEMA_LIST and isinstance(value, list):
+            out[key] = [strip_header_annotations(v) for v in value]
+        elif key in _SCHEMA_MAP and isinstance(value, dict):
+            out[key] = {name: strip_header_annotations(sub) for name, sub in value.items()}
+        else:
+            out[key] = value
+    return out
+
+
 def canonical_tools_hash(tools: list[dict[str, Any]]) -> str:
     """A stable hash of a ``tools/list`` response.
 
@@ -223,6 +276,7 @@ def build_proxy_manifest(
             # Handed to jsonschema for F-28 validation and to the LLM as the contract.
             # A non-object schema must become an empty object, not be trusted through.
             schema = {"type": "object"}
+        schema = strip_header_annotations(schema)
 
         raw_annotations = entry.get("annotations")
         annotations: dict[str, Any] = raw_annotations if isinstance(raw_annotations, dict) else {}

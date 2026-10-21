@@ -39,7 +39,6 @@ from mcp import Client  # noqa: E402
 from mcp.client.streamable_http import streamable_http_client  # noqa: E402
 from mcp.server.mcpserver import MCPServer  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
-from mcp.shared.exceptions import MCPError  # noqa: E402
 
 from device_mcp_gateway.core.protocol import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS  # noqa: E402
 from device_mcp_gateway.upstream.mcp_client import McpUpstreamError, StreamableHttpClient  # noqa: E402
@@ -47,9 +46,6 @@ from device_mcp_gateway.upstream.mcp_client import McpUpstreamError, StreamableH
 MODERN = MODERN_PROTOCOL_VERSIONS[0]
 HOST = "interop-sensor.local"
 
-NOT_YET_INBOUND = pytest.mark.xfail(
-    strict=True, reason="the gateway serves the stateless era from 0.4.0 Workstream B PR 4"
-)
 NOT_YET_OUTBOUND = pytest.mark.xfail(
     strict=True, reason="the gateway detects an upstream's era from 0.4.0 Workstream B PR 7"
 )
@@ -126,7 +122,6 @@ async def test_an_auto_client_reaches_every_feature_whichever_era_it_lands_in(ga
 
 
 @pytest.mark.anyio
-@NOT_YET_INBOUND
 async def test_an_auto_client_lands_in_the_stateless_era(gateway_url, device):
     http, client = _sdk_client(gateway_url, device, "auto")
     async with http, client as c:
@@ -134,39 +129,11 @@ async def test_an_auto_client_lands_in_the_stateless_era(gateway_url, device):
 
 
 @pytest.mark.anyio
-@NOT_YET_INBOUND
 async def test_a_pinned_modern_client_is_served_statelessly(gateway_url, device):
     http, client = _sdk_client(gateway_url, device, MODERN)
     async with http, client as c:
         seen = await _exercise(c)
     assert json.loads(seen["call_text"])["body"]["status"] == "online"
-
-
-@pytest.mark.anyio
-async def test_a_pinned_modern_client_fails_cleanly_rather_than_hanging_until_then(gateway_url, device):
-    """The roadmap's "fails" cell, asserted to fail *cleanly*: a protocol error the caller can
-    act on, well inside the client's timeout. Removed by PR 4, when this cell starts passing."""
-    import anyio
-
-    http, client = _sdk_client(gateway_url, device, MODERN)
-    try:
-        with anyio.fail_after(10):
-            async with http, client as c:
-                await c.list_tools()
-    except BaseException as exc:  # noqa: BLE001 - the SDK wraps errors in task-group ExceptionGroups
-        if _contains(exc, MCPError):
-            return
-        if _contains(exc, TimeoutError):
-            pytest.fail("a modern client against a handshake-only gateway hung instead of failing")
-        raise
-    pytest.xfail("served statelessly: PR 4 has landed, delete this test")
-
-
-def _contains(exc: BaseException, kind: type) -> bool:
-    """Whether ``exc`` is, or an exception group nested anywhere inside it holds, a ``kind``."""
-    if isinstance(exc, kind):
-        return True
-    return any(_contains(e, kind) for e in getattr(exc, "exceptions", ()))
 
 
 # --- outbound: the gateway's client against the SDK server -----------------------------------

@@ -121,3 +121,67 @@ def test_a_caller_editing_its_result_cannot_change_the_next_one():
     first = fleet_initialize_response(1, None)
     first["result"]["capabilities"]["tools"]["listChanged"] = True
     assert fleet_initialize_response(2, None)["result"]["capabilities"]["tools"] == {"listChanged": False}
+
+
+# --- the stateless era --------------------------------------------------------------------
+
+
+def test_the_cache_hint_set_is_exactly_the_sdks_cacheable_results():
+    """Every 2026-07-28 result model with a required ``ttlMs`` gets one — missing one does not
+    omit a hint, it makes the result fail its model — and nothing else gets one."""
+    import typing
+
+    surface = sdk_methods.serialize_server_result.__kwdefaults__["surface"]
+    cacheable = set()
+    for (method, version), model in surface.items():
+        if version != protocol.MODERN_PROTOCOL_VERSIONS[0]:
+            continue
+        for m in typing.get_args(model) or (model,):
+            if "ttl_ms" in m.model_fields and m.model_fields["ttl_ms"].is_required():
+                cacheable.add(method)
+    served = cacheable & (protocol.MODERN_DEVICE_METHODS | {"resources/templates/list"})
+    assert set(protocol.CACHE_TTL_MS) == served - {"resources/templates/list"}  # templates: not served
+
+
+def test_a_resource_read_is_never_cached():
+    """A read is the device's live state; a cached one is a stale measurement."""
+    assert protocol.CACHE_TTL_MS["resources/read"] == 0
+
+
+@pytest.mark.asyncio
+async def test_every_pod_result_made_modern_is_valid_and_complete_at_2026_07_28():
+    pod = _pod()
+    version = protocol.MODERN_PROTOCOL_VERSIONS[0]
+    for i, req in enumerate(_requests(pod)):
+        if req["method"] not in protocol.MODERN_DEVICE_METHODS:
+            continue  # initialize and ping do not exist in this era
+        resp = await pod._handle_mcp_message({"jsonrpc": "2.0", "id": i, **req})
+        shaped = protocol.modern_response(req["method"], resp, server_name="s", server_version="1")
+        result = shaped["result"]
+        sieved = sdk_methods.serialize_server_result(req["method"], version, result)
+        assert sieved == result, f"{req['method']}: the SDK model dropped or changed a field"
+
+
+def test_discover_is_valid_at_2026_07_28():
+    result = protocol.modern_response(
+        "server/discover",
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": protocol.discover_result(
+                server_name="s", server_version="1", capabilities=protocol.DEVICE_CAPABILITIES
+            ),
+        },
+        server_name="s",
+        server_version="1",
+    )["result"]
+    assert (
+        sdk_methods.serialize_server_result("server/discover", protocol.MODERN_PROTOCOL_VERSIONS[0], result) == result
+    )
+
+
+def test_the_stamp_fills_gaps_and_never_overwrites():
+    upstream = {"jsonrpc": "2.0", "id": 1, "result": {"resultType": "input_required", "_meta": {"k": "v"}}}
+    shaped = protocol.modern_response("tools/call", upstream, server_name="s", server_version="1")["result"]
+    assert shaped["resultType"] == "input_required" and shaped["_meta"]["k"] == "v"
+    assert shaped["_meta"][protocol.SERVER_INFO_META_KEY] == {"name": "s", "version": "1"}
