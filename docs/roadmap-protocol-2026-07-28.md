@@ -7,8 +7,37 @@ revision `2026-07-28`.
 |---|---|
 | Workstream A — Streamable HTTP inbound | ✅ shipped in `0.3.0` (`POST /v1/devices/{hostname}/mcp`, `POST /v1/fleet/mcp`) |
 | SDK `mcp` 1.x → 2.x | ✅ `0.3.7` — `FastMCP` deleted, `mcp` moved to the `dev` extra (see below) |
-| Workstream B — dual-era | ⬜ not started; distributed-mode design is [ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) (Accepted) |
-| HTTP+SSE removal | ⬜ `0.4.0`, paired with Workstream B |
+| Workstream B — dual-era | ✅ `0.4.0` — inbound in both modes, outbound era detection, fleet handles ([ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md)); see "Built" below |
+| HTTP+SSE removal | ✅ `0.4.0` — with the `transport` field (decision 6) |
+
+## Built (0.4.0)
+
+Workstream B landed as PRs 2–9 (PR 1, the SDK 2.x move, shipped in 0.3.7), verified against the official SDK in every client/server era
+combination (`tests/test_interop_eras.py`):
+
+1. **One protocol module** (`core/protocol.py`): the version list (decision 3), negotiation, and
+   the result builders that were hand-copied in four places.
+2. **The interop matrix**: the SDK client in `legacy`, `auto` and pinned-`2026-07-28` modes
+   against a real gateway; the gateway's client against the SDK server as dual-era,
+   handshake-only and modern-only peers. Cells not yet passing were strict `xfail`s naming the
+   PR that would close them; none remain.
+3. **Inbound, embedded**: era routing on the device endpoint, the SDK's envelope ladder and status
+   table, `server/discover`, `resultType` and cache hints, all validated against the SDK's wire
+   models.
+4. **Inbound, distributed**: per-request reply routing (ADR-0027 §1–§2). The test that two
+   principals both numbering from 1 get their own results failed against the old routing with
+   one receiving the other's.
+5. **Fleet handles** (ADR-0027 §5).
+6. **Outbound era detection**: the SDK client's probe rule, cached per upstream URL and re-learned
+   once when it fails (trap 3); a modern upstream's tools that require `Mcp-Param-*` headers are
+   not offered (ADR-0010 implementation note).
+7. **HTTP+SSE removed**, and `transport` refused (decisions 2 and 6).
+8. **Documentation.**
+
+The traps, as they played out: trap 1 caught a missing cache hint on `resources/read` that made
+a result fail its model (silently, had the test only validated); trap 2's cold path is why every
+cell starts from a fresh era cache, which exposed three tests passing on a verdict leaked from
+an earlier one; trap 4 is enforced by validating every result against the SDK's surface.
 
 ## Why this is not optional
 

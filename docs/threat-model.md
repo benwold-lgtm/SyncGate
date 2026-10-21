@@ -168,7 +168,7 @@ see, post-sanitisation — that is the review surface for tool poisoning.
 | A proxied upstream changes its contract between polls | **Detected, not prevented** — classified, recorded and alertable within one `spec_poll_interval`. There is no pre-approval gate: a change is visible after the fact, not blocked before it |
 | TLS trust for outbound device calls is fleet-global | **Closed 2026-08-10** — `security.mtls.devices.<hostname>` scopes a CA, a client identity or a `verify: false` to one device; unnamed devices keep the fleet profile. A bad profile fails at startup. Proven by a two-server handshake with a positive control ([security-mtls.md](security-mtls.md#per-device-trust)) |
 | Fernet is not FIPS-validated | **Tracked (F-60)** — matters only for FedRAMP; see [compliance.md](compliance.md) |
-| SSE is replica-pinned (soft gateway statefulness) | **Accepted (F-20)** — documented; affects availability not confidentiality |
+| SSE is replica-pinned (soft gateway statefulness) | **Resolved in 0.4.0 (F-20)** — HTTP+SSE removed; nothing is pinned to a replica between requests |
 | Single global mTLS identity for all devices | **Closed 2026-08-10** — a device block may carry its own `client_cert`/`client_key`, so heterogeneous device PKIs no longer need separate deployments. The profile *set* still comes from config, not the API: `client_key` is secret material and belongs in a mounted Secret |
 
 ## 7. Maintenance

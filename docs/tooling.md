@@ -36,8 +36,9 @@ Because `operationId` drives the name, **a stable, unique `operationId` per oper
 
 ## Fleet sessions: naming and dispatch
 
-A fleet session (`GET /v1/fleet/sse?devices=a,b,…`) aggregates several devices' tools
-into one MCP session. The contract:
+A fleet (`POST /v1/fleet/{handle}/mcp` after `POST /v1/fleets`, or the deprecated
+handshake-only `POST /v1/fleet/mcp?devices=a,b,…`) aggregates several devices' tools behind
+one MCP endpoint. The contract:
 
 - **Display name** = sanitize(`{hostname}_{tool_name}`) using the same sanitizer as
   above — `my-sensor.local`'s `get_readings` appears as `my_sensor_local_get_readings`.

@@ -57,7 +57,6 @@ process-global registry needs no multiprocess mode.
 | `mcp_registered_devices` | gauge | — | gateway | Devices in the registry. |
 | `mcp_active_pods` | gauge | — | gateway | Devices with an active pod (fleet-wide, from the registry). |
 | `mcp_reachable_devices` | gauge | — | gateway | Devices currently reachable. |
-| `mcp_active_sse_connections` | gauge | — | gateway | Open SSE connections **on this replica** (sum across replicas for the total). |
 | `mcp_worker_pods` | gauge | — | worker | DevicePods running on this worker. |
 | `mcp_worker_pending_calls` | gauge | — | worker | Delivered-but-unacked tool calls across this worker's device streams — the **Redis-stream-lag** signal for the worker HPA. |
 | `mcp_worker_assignments_lag` | gauge | — | worker | Pending entries in this worker's assignments consumer group. |
@@ -186,7 +185,6 @@ histogram_quantile(0.95, sum by (le, hostname) (rate(mcp_tool_call_duration_seco
 # Fleet health
 mcp_registered_devices
 mcp_reachable_devices
-sum(mcp_active_sse_connections)            # total open SSE streams across replicas
 
 # Worker backlog (HPA signal) — average pending calls per worker
 avg(mcp_worker_pending_calls)

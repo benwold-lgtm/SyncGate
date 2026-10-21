@@ -187,8 +187,7 @@ record names the failure.
 
 ### An MCP endpoint answers 503 "registered but not serving"
 
-`POST /v1/devices/{hostname}/mcp`, `GET …/sse` and `POST …/messages` answer **503 with
-`Retry-After`** (0.3.8 on) when the device is registered but has no active pod. A 404 now
+`POST /v1/devices/{hostname}/mcp` answers **503 with `Retry-After`** (0.3.8 on) when the device is registered but has no active pod. A 404 now
 means only that the device is not registered.
 
 The usual cause is a device moving between workers. A worker that stops cleanly hands its
@@ -202,7 +201,7 @@ curl -H "Authorization: Bearer $KEY" "$GW/v1/devices/$H" | jq '{reachable, pod_a
 
 and continue at ["A device shows `reachable: false`"](#a-device-shows-reachable-false--its-tools-fail-d1).
 
-### "`pod_active: true` but `/sse` returns 404" (transient, after a worker roll)
+### "`pod_active: true` but the device answers 503" (transient, after a worker roll)
 
 Expected during a worker rollout, and it **self-resolves in seconds** — do not start
 deleting device records over it.
@@ -210,7 +209,7 @@ deleting device records over it.
 The device record's `pod_active` flag and the worker actually holding the device's lease
 are two pieces of state that converge, not one atomic fact. While a worker is terminating,
 its lease has not yet expired and the flag still reads true, but the pod that would serve
-the stream is gone — so a session opened in that window gets a 404.
+the call is gone — so a call in that window is answered 503 with `Retry-After`.
 
 ```bash
 kubectl -n $NS rollout status deploy/device-mcp-worker    # is a roll actually in progress?
@@ -651,8 +650,9 @@ kubectl -n $NS rollout restart deploy/device-mcp-gateway   # gateway: stateless,
 kubectl -n $NS rollout restart deploy/device-mcp-worker    # workers: devices rebalance during the roll
 ```
 
-A gateway replica that loses an in-flight SSE stream drops it; the client reconnects and
-retries (F-20, accepted). For version upgrades follow [upgrade.md](upgrade.md), not a bare
+A gateway replica that is restarted drops the requests it is waiting on (the client sees a
+connection error and retries). Nothing is pinned to a replica since HTTP+SSE went: the next
+request may land anywhere (F-20). For version upgrades follow [upgrade.md](upgrade.md), not a bare
 restart.
 
 ### Verify the audit trail

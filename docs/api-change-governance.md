@@ -97,9 +97,10 @@ it is persisted per device (cleared when the device is deleted).
 ### Why not a real-time `notifications/tools/list_changed` push?
 
 The MCP layer advertises `tools.listChanged: false` in its `initialize`
-response — honestly. The SSE connection is replica-pinned (see F-20), and on a
-pod replace the old pod's transport is torn down, so the client's stream drops
-and it reconnects + re-lists anyway. Rather than fake a push capability we
+response — honestly. There is no connection to push on: every request is answered
+on its own response, and the stateless era (`2026-07-28`) has no session at all.
+Its list results carry a `ttlMs` hint instead, so a modern client re-lists on a
+known cadence. Rather than fake a push capability we
 cannot reliably deliver across the distributed boundary, the governance signal
 is the **recorded, classified change** plus the **pollable revision**. A future
 inbound-notification bridge (see F-46 below) is the natural place a true push

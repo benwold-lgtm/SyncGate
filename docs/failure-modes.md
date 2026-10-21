@@ -17,7 +17,7 @@ Severity: 🔴 outage / data-affecting · 🟠 degraded · 🟡 localized.
 | G3 | Client floods a hot device | 🟠 | `mcp_calls_rejected_overload_total` → `MCPAdmissionShedding`; 429s | Excess calls rejected with `Retry-After` (visible, not silent) | Admission control sheds past backlog watermark (F-06) | Scale workers; check the slow upstream |
 | G4 | Per-IP/principal rate limit tripped | 🟡 | 429 rate; access log | That caller throttled | Per-IP + per-principal limits (F-16) | Confirm intended; raise limit if false positive |
 | G5 | Hostile/huge spec on register | 🟠 | Spec-size/op-count reject logs | Registration rejected, pool protected | Size + op-count + translate-timeout bounds (F-09) | Inspect the offending spec/device |
-| G6 | SSE dispatching replica dies mid-call | 🟠 | Client SSE drops; F6 timeout watcher | In-flight result may be lost to that client | Replica-pinned SSE accepted (F-20); client reconnects + retries | None routine; client retries |
+| G6 | The replica waiting on a call dies mid-call | 🟡 | Client sees a dropped connection | That one in-flight answer is lost to that client; the call may still complete on the worker | Nothing is replica-pinned since 0.4.0 (F-20 resolved): the retry lands on any replica. A non-idempotent retry is guarded by F-08 | None routine; client retries |
 
 ## 2. Control plane / Redis
 
@@ -28,7 +28,7 @@ Severity: 🔴 outage / data-affecting · 🟠 degraded · 🟡 localized.
 | R3 | Call-stream backlog nears MAXLEN (10k) | 🟠 | `mcp_worker_undelivered_calls` → `MCPUndeliveredBacklogNearMaxlen` | Oldest undelivered calls will be trimmed | Admission 429 (F-06) sheds before MAXLEN; alert fires at 8k | Scale workers; find the stuck consumer |
 | R4 | Thundering herd after a Redis flap | 🟠 | Redis CPU/conn spike on recovery | Reconvergence load spike | ±20% jitter on every periodic loop/election/reconnect (F-61) | Usually self-heals; check jitter config |
 | R6 | A deleted device is resurrected as a partial record by a worker still writing to it | 🟠 | `GET /devices/{h}` 500s with `KeyError: 'hostname'` while `GET /devices` looks clean; re-registering that hostname fails the same way | One hostname is unusable — unreadable and unregisterable — until the key is deleted by hand | `update_device_fields` will not create the record (`WATCH`/`MULTI`, not check-then-write), and a partial record reads as absent so leftovers clear themselves on re-registration (2026-08-10) | None routine; a leftover from before the fix logs a warning naming the key and is overwritten by re-registering the device |
-| R5 | Blocking read outlives its own socket deadline | 🟠 | `redis.exceptions.TimeoutError` in gateway logs; a `500` where a `504` is expected; idle SSE streams dropping ~30s in | Unanswered tool calls report as gateway failure rather than device timeout; open SSE streams torn down mid-session | Block window derived from the connection's socket deadline, and a raised timeout treated as an elapsed window so the caller's own timeout stays authoritative (2026-08-07) | None routine; if it recurs, compare `redis.socket_timeout` against the XREAD block window — they must not be equal |
+| R5 | Blocking read outlives its own socket deadline | 🟠 | `redis.exceptions.TimeoutError` in gateway logs; a `500` where a `504` is expected (before 0.4.0, also idle SSE streams dropping ~30s in) | Unanswered tool calls report as gateway failure rather than device timeout | Block window derived from the connection's socket deadline, and a raised timeout treated as an elapsed window so the caller's own timeout stays authoritative (2026-08-07) | None routine; if it recurs, compare `redis.socket_timeout` against the XREAD block window — they must not be equal |
 
 ## 3. Workers
 
@@ -76,7 +76,6 @@ against a measured load baseline** (run the [load harness](load-testing.md); F-2
 |------|--------|
 | Redis (control plane) | Single logical store; run HA/replicated. Auth+TLS gated (F-24). The whole stack depends on it |
 | Reconciler / gauge leader | Election-based; gaps on flap are alerted + idempotent (F-21) — not a hard SPOF |
-| SSE replica pinning | Soft statefulness; a replica loss drops its streams, clients reconnect (F-20, accepted) |
 | `MCP_SECRET_KEY` | Loss makes encrypted credentials unrecoverable — back it up out-of-band; rotate via the documented zero-downtime flow (F-34) |
 
 ## 7. Maintenance

@@ -12,7 +12,7 @@ for the role/scope model; the *decision* behind it is
 |-------|--------|--------------------------|
 | `devices:read` | See devices and their state; **propose** a device-write plan (ADR-0022) — writes nothing, reaches nothing (see below); also the `require_scope` guard on **apply** (the actual gate there is the `devices:write-planned` grant below, checked inline) | `GET /v1/devices`, `GET /v1/devices/{h}`, `…/diagnostics`, `…/tools`, `…/tools/diff`, `…/deadletter` (inspect), `GET /v1/admin/overview`, `POST /v1/devices/plans`, `POST /v1/devices/plans/apply` |
 | `devices:write` | Manage the fleet; **review and approve** a proposed device-write plan (ADR-0022) | `POST/PUT/DELETE /v1/devices/{h}`, `POST …/deadletter/replay`, `DELETE …/deadletter` (drain), `GET /v1/devices/plans/{id}`, `POST /v1/devices/plans/{id}/approve` |
-| `tools:call` | Invoke a device's MCP tools | `GET /v1/devices/{h}/sse`, `POST /v1/devices/{h}/messages` |
+| `tools:call` | Invoke a device's MCP tools; mint and use fleet handles | `POST`/`DELETE /v1/devices/{h}/mcp`, `POST /v1/fleet/{handle}/mcp`, `POST`/`GET`/`DELETE /v1/fleets…`, `POST /v1/fleet/mcp` (deprecated) |
 | `metrics:read` | Read operational metrics | `GET /v1/metrics/summary` |
 | `backup:read` | Export an archive of the registry; preview a restore (writes nothing) | `GET /v1/admin/backup`, `POST /v1/admin/backup`, `POST /v1/admin/restore/preview` |
 | `backup:write` | Apply a restore | `POST /v1/admin/restore/apply` |
@@ -119,7 +119,7 @@ for the role/scope model; the *decision* behind it is
 ## Roles (scope bundles)
 
 Two kinds of principal: **humans** operating the UI, and **machines** (an MCP client/agent
-invoking tools over SSE). One scope model serves both.
+invoking tools over `/mcp`). One scope model serves both.
 
 | Role | `devices:read` | `devices:write` | `tools:call` | `metrics:read` | `backup:read` | `backup:write` | `backup:export-portable` | `support:request` | `support:administer` | `notifications:read` | For |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|-----|
