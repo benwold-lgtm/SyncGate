@@ -16,7 +16,6 @@ from contextlib import asynccontextmanager
 import fakeredis.aioredis
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 
 from device_mcp_gateway.main import create_app
 from device_mcp_gateway.rbac import Authenticator
@@ -127,30 +126,3 @@ def _distributed_app(backlog, backlog_limit, monkeypatch):
     app.state.registry = _StubRegistry(backend)
     monkeypatch.setattr(app.state, "authenticator", Authenticator({}, enabled=False))
     return app, backend
-
-
-def test_messages_endpoint_sheds_when_backlog_over_watermark(monkeypatch):
-    app, backend = _distributed_app(backlog=5, backlog_limit=1, monkeypatch=monkeypatch)
-
-    with TestClient(app) as client:
-        resp = client.post(
-            "/v1/devices/devx/messages?session_id=s1",
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
-        )
-    assert resp.status_code == 429
-    assert resp.headers.get("Retry-After") == "1"
-    assert backend.published == []  # shed before publishing — no silently-trimmed call
-
-
-def test_messages_endpoint_accepts_when_backlog_under_watermark(monkeypatch):
-    app, backend = _distributed_app(backlog=2, backlog_limit=1000, monkeypatch=monkeypatch)
-
-    # No "id" => no timeout watcher task is spawned, keeping the test self-contained.
-    with TestClient(app) as client:
-        resp = client.post(
-            "/v1/devices/devy/messages?session_id=s1",
-            json={"jsonrpc": "2.0", "method": "tools/call"},
-        )
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "accepted"}
-    assert len(backend.published) == 1  # under the watermark => the call was published

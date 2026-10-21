@@ -31,7 +31,7 @@ from device_mcp_gateway.shared.registry_backend import (
 
 
 def _device(hostname="dev1"):
-    return DeviceConfig(hostname=hostname, base_url="https://dev1.example", transport="sse")
+    return DeviceConfig(hostname=hostname, base_url="https://dev1.example")
 
 
 # ---------------------------------------------------------------------------

@@ -100,9 +100,8 @@ def _sanitize_header_params(items: dict[str, Any]) -> dict[str, str]:
 class DevicePod(BasePod):
     """Manages a single per-hostname MCP server instance backed by an OpenAPI API.
 
-    In embedded mode the pod also owns an SseTransport.
-    In distributed mode the worker calls call_tool() directly and results
-    are routed through Redis pub/sub — no SseTransport is created.
+    Every message reaches it as a call: from the Streamable HTTP endpoint in embedded mode,
+    from the worker's dispatcher in distributed mode, which publishes the result to Redis.
     """
 
     def _build_dispatch(self) -> None:

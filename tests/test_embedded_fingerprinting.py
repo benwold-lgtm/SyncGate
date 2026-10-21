@@ -46,7 +46,7 @@ async def _register(reg: Registry, st, hostname: str, upstream_kind: str = "open
     reg._profiles[hostname] = profile
     await reg._backend.set_device(hostname, cfg)
     if st:
-        await st.save(hostname, {"base_url": cfg.base_url, "transport": "sse", "upstream_kind": upstream_kind})
+        await st.save(hostname, {"base_url": cfg.base_url, "upstream_kind": upstream_kind})
     return profile
 
 
@@ -168,7 +168,7 @@ async def test_an_approval_survives_a_restart(tmp_path):
 async def test_the_store_writes_allowlisted_fingerprint_columns_only(tmp_path):
     st = SqliteDeviceStore(db_path=str(tmp_path / "d.db"))
     await st.initialize()
-    await st.save("x", {"base_url": "http://x", "transport": "sse"})
+    await st.save("x", {"base_url": "http://x"})
     await st.update_fields("x", {"declared_name": "X", "base_url": "http://evil", "nope": 1})
     [row] = await st.load_all()
     assert row["declared_name"] == "X" and row["base_url"] == "http://x"

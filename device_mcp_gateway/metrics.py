@@ -35,7 +35,6 @@ __all__ = [
     "registered_devices",
     "active_pods",
     "reachable_devices",
-    "active_sse_connections",
     "worker_pods",
     "worker_pending_calls",
     "worker_assignments_lag",
@@ -48,7 +47,6 @@ __all__ = [
     "calls_rejected_overload_total",
     "worker_calls_throttled_total",
     "tool_call_timeouts_total",
-    "sse_messages_dropped_total",
     "dead_letter_total",
     "circuit_breaker_opens_total",
     "upstream_retries_total",
@@ -138,12 +136,6 @@ registered_devices = Gauge("mcp_registered_devices", "Number of registered devic
 active_pods = Gauge("mcp_active_pods", "Number of devices with an active pod.")
 reachable_devices = Gauge("mcp_reachable_devices", "Number of reachable devices.")
 
-# Per-replica live SSE connection count (Prometheus sums across replicas).
-active_sse_connections = Gauge(
-    "mcp_active_sse_connections",
-    "Currently open SSE connections on this replica.",
-)
-
 # --- Worker-side gauges (distributed mode) -----------------------------------
 # Per-worker, refreshed on a timer. Prometheus distinguishes workers by the
 # scrape target (instance label), so these stay single-series per worker.
@@ -209,12 +201,7 @@ device_tools_changed_total = Counter(
 # visible in Prometheus instead of only in logs.
 tool_call_timeouts_total = Counter(
     "mcp_tool_call_timeouts_total",
-    "Tool calls that hit the gateway's no-worker-responded timeout (F6).",
-    ["hostname"],
-)
-sse_messages_dropped_total = Counter(
-    "mcp_sse_messages_dropped_total",
-    "SSE responses dropped because a client's queue was full (embedded mode).",
+    "Tool calls whose waiting request hit its deadline before a worker answered (F6).",
     ["hostname"],
 )
 dead_letter_total = Counter(

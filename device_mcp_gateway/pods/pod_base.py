@@ -52,7 +52,6 @@ from device_mcp_gateway.core.errors import (
 from device_mcp_gateway.core.protocol import DEVICE_CAPABILITIES, initialize_response
 from device_mcp_gateway.core.translator import McpManifest
 from device_mcp_gateway.pods.rate_limiter import TokenBucket
-from device_mcp_gateway.pods.sse_server import SseTransport
 from device_mcp_gateway.security.url_policy import build_guarded_client
 
 
@@ -91,11 +90,9 @@ class BasePod(ABC):
         self,
         hostname: str,
         manifest: McpManifest,
-        transport: str = "sse",
         auth: AbstractAuth | None = None,
         base_url: str = "",
         rate_limit_rps: float | None = None,
-        keep_alive_interval: int = 30,
         request_timeout: float = 15,
         retry_policy: RetryPolicy | None = None,
         tls_verify: "ssl.SSLContext | bool" = True,
@@ -105,10 +102,8 @@ class BasePod(ABC):
     ):
         self.hostname = hostname
         self.manifest = manifest
-        self.transport = transport
         self.auth = auth
         self.base_url = base_url
-        self._keep_alive_interval = keep_alive_interval
         self._request_timeout = request_timeout
         # Outbound TLS for calls to this upstream (F-31). True = httpx default
         # certifi server verification; an SSLContext carries a client cert and/or
@@ -137,7 +132,6 @@ class BasePod(ABC):
         self._running = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
-        self.sse_transport: SseTransport | None = None
         # name → JSON input schema, for server-side argument validation (Tier-0 F-28).
         # Derived from the manifest, so it holds for any pod kind — a subclass that
         # forgot to populate it would silently disable validation, which is why it is
@@ -351,43 +345,18 @@ class BasePod(ABC):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def _ensure_sse_transport(self) -> SseTransport:
-        if not self.sse_transport:
-            self.sse_transport = SseTransport(
-                self.hostname,
-                self._handle_mcp_message,
-                keep_alive_interval=self._keep_alive_interval,
-            )
-        return self.sse_transport
+    async def start(self) -> None:
+        """Mark the pod as serving.
 
-    async def start(self, with_sse: bool = True) -> None:
-        """Start the pod.
-
-        Args:
-            with_sse: If True (default, embedded mode), start the SSE transport
-                      task so the pod accepts connections on its in-process queue.
-                      Pass False in distributed mode — the worker calls call_tool()
-                      directly and SSE routing goes through Redis.
+        The pod has no task of its own: every message reaches it as a call — from the
+        Streamable HTTP endpoint in embedded mode, from the worker's dispatcher in distributed
+        mode. (Until 0.4.0 an embedded pod also ran an HTTP+SSE transport task here.)
         """
         if self._running:
             return
-        if with_sse and self.transport != "sse":
-            raise ValueError(f"Unsupported transport: {self.transport}")
         self._running = True
         self._stop_event = asyncio.Event()
-        if with_sse:
-            self._task = asyncio.create_task(self._run_sse())
         logger.info(f"Pod started for {self.hostname}")
-
-    async def _run_sse(self) -> None:
-        transport = self._ensure_sse_transport()
-        await transport.start()
-        try:
-            await self._stop_event.wait()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            await transport.stop()
 
     def stop(self) -> None:
         """Gracefully stop the pod."""

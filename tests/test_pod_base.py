@@ -185,12 +185,6 @@ async def test_resources_read_defaults_to_unsupported_rather_than_reaching_the_n
     assert resp["error"]["code"] == -32602
 
 
-async def test_start_rejects_a_transport_it_cannot_serve():
-    pod = _pod(transport="stdio")
-    with pytest.raises(ValueError):
-        await pod.start()
-
-
 def test_egress_posture_is_configured_on_auth_by_the_base():
     """SSRF posture (F-02) is propagated to the auth handler in the base constructor, so an
     auth handler that makes its own outbound calls shares the pod's policy for every pod

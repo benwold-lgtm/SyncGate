@@ -24,7 +24,7 @@ SESSION_HEADER = "Mcp-Session-Id"
 def _register(client, hostname, mock_target_url):
     resp = client.post(
         "/v1/devices",
-        json={"hostname": hostname, "base_url": mock_target_url, "auth_type": "none", "transport": "sse"},
+        json={"hostname": hostname, "base_url": mock_target_url, "auth_type": "none"},
     )
     assert resp.status_code == 200, f"Registration failed for {hostname}: {resp.json()}"
 
@@ -219,20 +219,12 @@ def _route_scopes(router, path, method):
     raise AssertionError(f"no route for {method} {path}; router has {known}")
 
 
-def test_the_new_transport_enforces_the_same_scope_as_the_old_one():
-    """A second transport must not become a way around authorization.
-
-    Compared against the SSE message route rather than hard-coded, so that if the scope for
-    tool calls is ever changed, the two move together or this fails.
-
-    Reads the routers directly — see `_route_scopes` for why not an app.
-    """
-    from device_mcp_gateway.api import sse as sse_routes
+def test_every_mcp_route_requires_tools_call():
+    """No method on the device MCP endpoint is reachable without the tool-call scope. (Until
+    0.4.0 this compared against the HTTP+SSE message route; that route is gone, so the scope
+    is asserted directly.)"""
     from device_mcp_gateway.api import streamable as streamable_routes
 
-    legacy = _route_scopes(sse_routes.router, "/devices/{hostname}/messages", "POST")
-    assert "tools:call" in legacy, legacy
-
     for method in ("POST", "GET", "DELETE"):
-        new = _route_scopes(streamable_routes.router, "/devices/{hostname}/mcp", method)
-        assert set(legacy) <= set(new), f"{method} /mcp requires {new}, weaker than /messages {legacy}"
+        scopes = _route_scopes(streamable_routes.router, "/devices/{hostname}/mcp", method)
+        assert "tools:call" in scopes, f"{method} /mcp requires {scopes}"

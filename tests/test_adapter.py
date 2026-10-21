@@ -267,7 +267,7 @@ async def test_pod_4xx_returns_error_envelope():
         )
 
     with patch("httpx.AsyncClient.request", fake_request):
-        pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+        pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
         result = await pod._tool_dispatch["t"]()
     assert result["ok"] is False
     assert result["status"] == 400
@@ -290,7 +290,7 @@ async def test_pod_multipart_encodes_file_part():
         return httpx.Response(status_code=200, content=b"{}", headers={"content-type": "application/json"})
 
     with patch("httpx.AsyncClient.request", fake_request):
-        pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+        pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
         await pod._tool_dispatch["t"](file="filedata", name="doc")
 
     assert captured["files"] == {"file": b"filedata"}

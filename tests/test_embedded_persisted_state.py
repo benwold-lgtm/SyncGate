@@ -44,7 +44,7 @@ async def _register(reg: Registry, st, hostname: str) -> None:
     cfg = DeviceConfig(hostname=hostname, base_url=f"https://{hostname}.local")
     reg._profiles[hostname] = DeviceProfile(config=cfg)
     await reg._backend.set_device(hostname, cfg)
-    await st.save(hostname, {"base_url": cfg.base_url, "transport": "sse"})
+    await st.save(hostname, {"base_url": cfg.base_url})
 
 
 async def _restart(tmp_path) -> Registry:

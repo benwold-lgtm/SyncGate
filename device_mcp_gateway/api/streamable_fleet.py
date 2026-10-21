@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""Streamable HTTP for the **fleet** surface (Phase 6, Workstream A3).
+"""The **fleet** MCP surface: one endpoint spanning several devices (ADR-0008).
 
-One MCP session spanning several devices (ADR-0008), over the transport A1/A2 introduced.
-Stands to ``api/fleet.py`` exactly as ``api/streamable.py`` stands to ``api/sse.py``.
+Two entry points, both over Streamable HTTP:
 
-**This resolves the inline-vs-stream split.** On the SSE fleet surface, distributed mode
-answers ``initialize``/``ping``/``tools/list`` inline on the POST body but returns
-``{"status": "accepted"}`` for ``tools/call`` and delivers the real result on the stream —
-while embedded mode delivers all four on the stream. Both shapes are legal MCP, but the
-asymmetry cost a debugging round and is recorded as a finding in ``docs/testing-gaps.md``.
-Here there is no stream to deliver anything on, so **every method answers on the POST that
-asked**, identically in both modes. That is the point of the transport, not a bonus.
+- ``/v1/fleet/mcp?devices=…`` — the handshake era only, deprecated in 0.4.0: the set is
+  fixed on ``initialize`` and carried by the session (ADR-0008).
+- ``/v1/fleet/{handle}/mcp`` — a minted handle (``api/fleets.py``, ADR-0027 §5), serving
+  both eras through ``serve_fleet_handshake`` and ``serve_fleet_modern`` here.
+
+**Every method answers on the POST that asked**, identically in both modes. (The HTTP+SSE
+fleet, removed in 0.4.0, answered some methods inline and delivered ``tools/call`` on a
+stream, differently per mode; that asymmetry is recorded in ``docs/testing-gaps.md``.)
 
 ``tools/call`` reuses the ``ResultExchange`` seam from A1/A2 rather than re-implementing
 dispatch: ``fleet_service.rewrite_tools_call`` resolves a namespaced display name to
@@ -44,7 +44,7 @@ from device_mcp_gateway.api.streamable import (
 from device_mcp_gateway.audit import audit_log
 from device_mcp_gateway.core import protocol
 from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, RPC_NO_WORKER, rpc_error
-from device_mcp_gateway.fleet_service import FleetManifest, fleet_initialize_response
+from device_mcp_gateway.fleet_service import fleet_initialize_response
 from device_mcp_gateway.ratelimit import rate_limit, rate_limit_principal
 from device_mcp_gateway.rbac import SCOPE_TOOLS_CALL, require_scope
 from device_mcp_gateway.registry.server import Registry
@@ -97,34 +97,6 @@ async def _fleet_delete(request: Request, session_id: str) -> None:
     else:
         request.app.state.session_owners.pop(session_id, None)
         request.app.state.fleet_hosts.pop(session_id, None)
-
-
-async def _publish_tools(request: Request, session_id: str, manifest: FleetManifest) -> None:
-    """Publish the display-name lookup table for this fleet session.
-
-    **Nothing on this transport reads it** — every method here rebuilds the manifest, which is
-    what lets a device that was down at open join later. It is written because the *SSE* fleet
-    route does read it (``api/fleet.py``), so a session opened over Streamable HTTP stays
-    usable on ``POST /fleet/messages`` while HTTP+SSE is being retired. Verified, not assumed:
-    ``test_a_streamable_opened_fleet_session_is_usable_on_the_sse_route``.
-
-    Written on initialize and refreshed on every ``tools/list``, so it never lags the manifest
-    this transport last reported.
-    """
-    if request.app.state.mode != "distributed":
-        return
-    await request.app.state.session_router.set_fleet_tools(
-        session_id,
-        {
-            e.display_name: {
-                "hostname": e.hostname,
-                "real_name": e.real_name,
-                "description": e.description,
-                "schema": e.schema,
-            }
-            for e in manifest.entries
-        },
-    )
 
 
 def _resolve_hostnames(devices: str | None, cfg: dict[str, Any]) -> list[str]:
@@ -207,7 +179,6 @@ async def serve_fleet_handshake(
         # caller graft themselves onto another principal's session (F-37).
         session_id = str(uuid.uuid4())
         await _fleet_create(request, session_id, hostnames, _subject)
-        await _publish_tools(request, session_id, manifest)
         response.headers[SESSION_HEADER] = session_id
 
         return _json(fleet_initialize_response(msg_id, payload.get("params")), response)
@@ -237,10 +208,8 @@ async def serve_fleet_handshake(
         # Rebuilt rather than served from what was cached at open, and rebuilt against the
         # ORIGINALLY requested hostnames — so a device that was down when the session opened
         # joins the fleet once it comes back, instead of being missing for the session's whole
-        # life. The distributed lookup table is refreshed from the same manifest so that
-        # tools/call resolves against exactly what was just listed.
+        # life.
         manifest, _skipped = await fleet_service.build_fleet_manifest(reg, hostnames)
-        await _publish_tools(request, session_id, manifest)
         return _json(fleet_service.aggregate_tools_list_result(manifest, msg_id), response)
 
     if method == "tools/call":

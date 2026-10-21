@@ -1,19 +1,13 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
-"""Streamable HTTP inbound transport (Phase 6, Workstream A).
+"""The device MCP endpoint, ``/v1/devices/{hostname}/mcp`` — Streamable HTTP, both eras.
 
-The gateway's only inbound transport has been **HTTP+SSE** — `GET /sse` returning an
-`endpoint` event, then `POST /messages?session_id=`. That transport is formally Deprecated
-with a removal clock, and `transport != "sse"` is a hard reject elsewhere, so there is no
-fallback. Streamable HTTP is owed regardless of whether we adopt revision `2026-07-28`.
-
-**Semantics here are unchanged** — this is revision `2025-06-18` over a different transport.
-Sessions still exist. The modern stateless era is Workstream B and lands on top of this.
-
-Deliberately a **separate path** (`/mcp`) rather than content negotiation on `/messages`:
-HTTP+SSE is scheduled for removal one minor release after this ships, and a separate path
-makes that a deletion rather than an unpicking.
+The gateway's only inbound transport since 0.4.0. (It began as Workstream A beside HTTP+SSE,
+on a separate path precisely so removing SSE could be a deletion rather than an unpicking —
+which is how it went.) One URL serves both eras: a request in the stateless era
+(``2026-07-28``, Workstream B) is answered with no session by ``_serve_modern``; anything else
+takes the handshake path, with a session, as before.
 
 **Both modes are supported.** The mode difference is confined to one function,
 ``_exchange_for``: in embedded mode the pod is in-process and answering is a call, while in

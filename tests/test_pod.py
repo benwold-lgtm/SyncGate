@@ -9,7 +9,6 @@ import pytest
 
 from device_mcp_gateway.core.translator import McpManifest, McpResource, McpTool
 from device_mcp_gateway.pods.device_pod import DevicePod
-from device_mcp_gateway.pods.sse_server import SseTransport
 
 
 @pytest.fixture
@@ -31,50 +30,16 @@ def simple_manifest() -> McpManifest:
 
 
 @pytest.mark.anyio
-async def test_device_pod_start_and_stop(monkeypatch, simple_manifest):
-    started = {"count": 0}
-
-    async def fake_run(self, mount_path=None):
-        started["count"] += 1
-        try:
-            while True:
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            raise
-
-    monkeypatch.setattr(SseTransport, "start", fake_run)
-
-    pod = DevicePod(
-        hostname="test-device",
-        manifest=simple_manifest,
-        transport="sse",
-        base_url="http://localhost:1234",
-    )
-
+async def test_device_pod_start_and_stop(simple_manifest):
+    """A pod has no task of its own since HTTP+SSE went (0.4.0): every message reaches it as a
+    call. Starting marks it serving; stopping marks it not, and is safe to repeat."""
+    pod = DevicePod(hostname="test-device", manifest=simple_manifest, base_url="http://localhost:1234")
     await pod.start()
     assert pod._running is True
-    assert pod._task is not None
-    await asyncio.sleep(0)
-    assert started["count"] == 1
-
+    await pod.start()  # idempotent
     pod.stop()
-    await asyncio.sleep(0)
     assert pod._running is False
-    assert pod._task.done() is True
-    assert pod._task.cancelled() is True
-
-
-@pytest.mark.anyio
-async def test_device_pod_unsupported_transport(simple_manifest):
-    pod = DevicePod(
-        hostname="test-device",
-        manifest=simple_manifest,
-        transport="unsupported",
-        base_url="http://localhost:1234",
-    )
-
-    with pytest.raises(ValueError, match="Unsupported transport"):
-        await pod.start()
+    pod.stop()
 
 
 @pytest.mark.anyio
@@ -111,7 +76,6 @@ async def test_path_param_substituted_in_url():
         pod = DevicePod(
             hostname="test-device",
             manifest=manifest,
-            transport="sse",
             base_url="http://device.local",
         )
         # Directly invoke the tool's dispatch closure
@@ -156,7 +120,6 @@ async def test_query_params_not_in_path():
         pod = DevicePod(
             hostname="test-device",
             manifest=manifest,
-            transport="sse",
             base_url="http://device.local",
         )
         tool_fn = pod._tool_dispatch["list_items"]
@@ -178,7 +141,7 @@ def _resource_manifest() -> McpManifest:
 
 @pytest.mark.anyio
 async def test_resources_list_returns_manifest_resources():
-    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), transport="sse", base_url="http://d.local")
+    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), base_url="http://d.local")
     response = await pod._handle_mcp_message({"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}})
     assert response["result"]["resources"] == [
         {
@@ -192,7 +155,7 @@ async def test_resources_list_returns_manifest_resources():
 
 @pytest.mark.anyio
 async def test_resources_read_fetches_device_endpoint():
-    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), transport="sse", base_url="http://d.local")
+    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), base_url="http://d.local")
     captured: dict = {}
 
     async def fake_request(self, method, url, **kwargs):
@@ -219,7 +182,7 @@ async def test_resources_read_fetches_device_endpoint():
 
 @pytest.mark.anyio
 async def test_resources_read_unknown_uri_returns_error():
-    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), transport="sse", base_url="http://d.local")
+    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), base_url="http://d.local")
     response = await pod._handle_mcp_message(
         {"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": "device://other-host/foo"}}
     )
@@ -229,38 +192,13 @@ async def test_resources_read_unknown_uri_returns_error():
 
 @pytest.mark.anyio
 async def test_initialize_advertises_resources_capability():
-    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), transport="sse", base_url="http://d.local")
+    pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), base_url="http://d.local")
     response = await pod._handle_mcp_message(
         {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}
     )
     caps = response["result"]["capabilities"]
     assert "resources" in caps
     assert caps["resources"]["subscribe"] is False
-
-
-@pytest.mark.anyio
-async def test_sse_stop_pushes_sentinel_even_when_queue_is_full():
-    """stop() must unblock event_stream even when the client queue is at maxsize."""
-    from device_mcp_gateway.pods.sse_server import SseTransport
-
-    async def noop_handler(msg):
-        return None
-
-    transport = SseTransport("test-host", noop_handler)
-    q = transport.register_client("sess1", "/messages?session_id=sess1")
-
-    # Fill the queue to its maxsize=1000 capacity
-    for i in range(1000):
-        try:
-            q.put_nowait({"event": "message", "data": str(i)})
-        except asyncio.QueueFull:
-            break
-
-    # stop() must drain the backlog and push the sentinel without raising
-    await transport.stop()
-
-    # After stop(), exactly the sentinel remains in the queue
-    assert q.qsize() == 1
 
 
 @pytest.mark.anyio

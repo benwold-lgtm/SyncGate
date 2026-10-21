@@ -14,8 +14,8 @@ exactly this class of problem — a fire-and-forget publish can be missed by a r
 mid-restart).
 
 That machinery is not built here, and deliberately so: a call this registry cannot reach still
-stops — the request handler is either already past its own bounded timeout logic (F6's
-`_watch_tool_call_timeout`) or is refused on its *next* call, since `check`/`check_proof` are
+stops — the request handler is either already past its own bounded wait (the exchange
+deadline every Streamable HTTP request carries) or is refused on its *next* call, since `check`/`check_proof` are
 already live-checked per request (no separate signed token to still be valid — see
 `support_grants.py`). What this registry buys is the *same-replica* case: a revoke lands on the
 very process where the call is still running, and that call is cancelled immediately rather

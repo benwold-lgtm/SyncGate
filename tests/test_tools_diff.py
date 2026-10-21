@@ -110,7 +110,7 @@ def _app(registry, monkeypatch, mode="embedded"):
 
 
 def _device(**over):
-    base = dict(hostname="dev", base_url="http://dev.local", transport="sse", reachable=True, pod_active=True)
+    base = dict(hostname="dev", base_url="http://dev.local", reachable=True, pod_active=True)
     base.update(over)
     return DeviceConfig(**base)
 

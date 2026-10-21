@@ -7,10 +7,12 @@ A self-contained async load generator with no dependencies beyond ``httpx`` (alr
 runtime dependency), so it runs anywhere the gateway runs. It drives one of two
 workloads against a *running* gateway and reports a latency/throughput baseline:
 
-  * ``toolcall`` — the real end-to-end MCP path: each virtual client opens an SSE
-    stream, reads its session ``endpoint``, then POSTs ``tools/call`` messages and
-    matches the corresponding ``message`` event back off the stream, timing the full
-    round-trip (gateway → Redis → worker → device → back).
+  * ``toolcall`` — the real end-to-end MCP path over Streamable HTTP
+    (``/v1/devices/{device}/mcp``): each virtual client POSTs ``tools/call`` messages and
+    times the full round-trip to the answer on that same response (gateway → Redis →
+    worker → device → back). ``--era stateless`` (the default) sends each call on its own,
+    in the ``2026-07-28`` envelope; ``--era handshake`` performs ``initialize`` once per
+    client and replays its session, as a ``2025-11-25`` client does.
   * ``register`` — device-registration throughput against ``POST /v1/devices`` (control
     plane), useful for sizing the spec-translation pool and onboarding bursts.
 
@@ -67,38 +69,45 @@ def percentile(samples: list[float], p: float) -> float:
     return ordered[min(rank, len(ordered)) - 1]
 
 
-def parse_sse_endpoint(chunk: str) -> str | None:
-    """Extract the POST endpoint from an SSE ``endpoint`` event block.
+#: The stateless revision ``--era stateless`` speaks.
+MODERN_VERSION = "2026-07-28"
+#: The handshake revision ``--era handshake`` speaks.
+HANDSHAKE_VERSION = "2025-11-25"
 
-    The gateway's first SSE event is ``event: endpoint`` whose ``data:`` line is the
-    session-scoped messages URL. Returns the URL, or ``None`` if this block isn't an
-    endpoint event.
+
+def build_call(era: str, msg_id: str, tool: str, arguments: dict, session_id: str | None = None) -> tuple[dict, dict]:
+    """The ``(body, headers)`` of one ``tools/call`` in ``era``.
+
+    Stateless: the ``_meta`` envelope and the routing headers a ``2026-07-28`` server checks.
+    Handshake: the plain request, carrying the session ``initialize`` issued.
     """
-    is_endpoint = False
-    data: str | None = None
-    for line in chunk.splitlines():
-        if line.startswith("event:") and line.split(":", 1)[1].strip() == "endpoint":
-            is_endpoint = True
-        elif line.startswith("data:"):
-            data = line.split(":", 1)[1].strip()
-    return data if is_endpoint else None
+    params: dict = {"name": tool, "arguments": arguments}
+    headers = {"Accept": "application/json, text/event-stream"}
+    if era == "stateless":
+        params["_meta"] = {
+            "io.modelcontextprotocol/protocolVersion": MODERN_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "loadgen", "version": "1"},
+        }
+        headers.update({"MCP-Protocol-Version": MODERN_VERSION, "Mcp-Method": "tools/call", "Mcp-Name": tool})
+    else:
+        headers["MCP-Protocol-Version"] = HANDSHAKE_VERSION
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+    return {"jsonrpc": "2.0", "id": msg_id, "method": "tools/call", "params": params}, headers
 
 
-def parse_sse_message(chunk: str) -> dict | None:
-    """Parse a ``message`` event block's JSON ``data`` payload, or ``None``."""
-    is_message = False
-    data: str | None = None
-    for line in chunk.splitlines():
-        if line.startswith("event:") and line.split(":", 1)[1].strip() == "message":
-            is_message = True
-        elif line.startswith("data:"):
-            data = line.split(":", 1)[1].strip()
-    if is_message and data:
-        try:
-            return json.loads(data)
-        except json.JSONDecodeError:
-            return None
-    return None
+def classify_reply(status: int, body: dict | None) -> str:
+    """``ok``, or the error bucket a reply belongs in."""
+    if status == 429:
+        return "throttled_429"
+    if status >= 400:
+        return f"post_{status}"
+    if not isinstance(body, dict):
+        return "bad_body"
+    if body.get("error"):
+        return "rpc_error"
+    return "ok"
 
 
 class RateLimiter:
@@ -196,75 +205,52 @@ def format_report(report: dict, workload: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _read_sse_until(response, predicate, timeout: float):
-    """Read SSE event blocks (separated by a blank line) until ``predicate(block)``
-    returns a non-None value or ``timeout`` elapses. Returns the value or None."""
-    buffer = ""
-    deadline = time.monotonic() + timeout
-    async for raw in response.aiter_lines():
-        if time.monotonic() > deadline:
-            return None
-        if raw == "":  # event delimiter
-            if buffer.strip():
-                value = predicate(buffer)
-                if value is not None:
-                    return value
-            buffer = ""
-        else:
-            buffer += raw + "\n"
-    return None
-
-
 async def _toolcall_client(idx: int, args, stats: Stats, limiter: RateLimiter, deadline: float) -> None:
-    headers = {"Authorization": f"Bearer {args.api_key}"} if args.api_key else {}
-    sse_url = f"{args.base_url}/v1/devices/{args.device}/sse"
+    auth = {"Authorization": f"Bearer {args.api_key}"} if args.api_key else {}
+    url = f"{args.base_url}/v1/devices/{args.device}/mcp"
     payload_args = json.loads(args.arguments) if args.arguments else {}
-    timeout = httpx.Timeout(args.timeout, read=None)  # stream read has no fixed timeout
+    session_id: str | None = None
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("GET", sse_url, headers=headers) as stream:
-                if stream.status_code != 200:
-                    stats.record_error(f"sse_{stream.status_code}")
-                    return
-                endpoint = await _read_sse_until(stream, parse_sse_endpoint, args.timeout)
-                if not endpoint:
-                    stats.record_error("no_endpoint")
-                    return
-                messages_url = f"{args.base_url}{endpoint}"
-                msg_id = 0
-                while time.monotonic() < deadline:
-                    await limiter.acquire()
-                    if time.monotonic() >= deadline:
-                        break
-                    msg_id += 1
-                    body = {
+        async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout)) as client:
+            if args.era == "handshake":
+                init = await client.post(
+                    url,
+                    headers={**auth, "Accept": "application/json, text/event-stream"},
+                    json={
                         "jsonrpc": "2.0",
-                        "id": f"{idx}-{msg_id}",
-                        "method": "tools/call",
-                        "params": {"name": args.tool, "arguments": payload_args},
-                    }
-                    t0 = time.monotonic()
+                        "id": f"{idx}-init",
+                        "method": "initialize",
+                        "params": {"protocolVersion": HANDSHAKE_VERSION, "capabilities": {}},
+                    },
+                )
+                session_id = init.headers.get("Mcp-Session-Id")
+                if init.status_code != 200 or not session_id:
+                    stats.record_error(f"initialize_{init.status_code}")
+                    return
+            msg_id = 0
+            while time.monotonic() < deadline:
+                await limiter.acquire()
+                if time.monotonic() >= deadline:
+                    break
+                msg_id += 1
+                body, headers = build_call(args.era, f"{idx}-{msg_id}", args.tool, payload_args, session_id)
+                t0 = time.monotonic()
+                try:
+                    post = await client.post(url, headers={**auth, **headers}, json=body)
+                    latency_ms = (time.monotonic() - t0) * 1000
                     try:
-                        post = await client.post(messages_url, headers=headers, json=body)
-                        if post.status_code == 429:
-                            stats.record_error("throttled_429")
-                            continue
-                        if post.status_code >= 400:
-                            stats.record_error(f"post_{post.status_code}")
-                            continue
-                        # The result returns asynchronously on the SSE stream.
-                        result = await _read_sse_until(stream, lambda b: parse_sse_message(b), args.timeout)
-                        latency_ms = (time.monotonic() - t0) * 1000
-                        if result is None:
-                            stats.record_error("timeout")
-                        elif isinstance(result, dict) and result.get("error"):
-                            stats.record_error("rpc_error")
-                        else:
-                            stats.record_ok(latency_ms)
-                    except httpx.TimeoutException:
-                        stats.record_error("timeout")
-                    except httpx.HTTPError:
-                        stats.record_error("transport")
+                        reply = post.json()
+                    except ValueError:
+                        reply = None
+                    verdict = classify_reply(post.status_code, reply)
+                    if verdict == "ok":
+                        stats.record_ok(latency_ms)
+                    else:
+                        stats.record_error(verdict)
+                except httpx.TimeoutException:
+                    stats.record_error("timeout")
+                except httpx.HTTPError:
+                    stats.record_error("transport")
     except httpx.HTTPError as exc:
         stats.record_error(f"connect_{type(exc).__name__}")
 
@@ -333,6 +319,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default="", help="[toolcall] registered device hostname")
     p.add_argument("--tool", default="", help="[toolcall] MCP tool name to call")
     p.add_argument("--arguments", default="{}", help="[toolcall] JSON tool arguments")
+    p.add_argument(
+        "--era",
+        choices=["stateless", "handshake"],
+        default="stateless",
+        help="[toolcall] MCP era: stateless 2026-07-28 requests, or a 2025-11-25 session",
+    )
     # register
     p.add_argument("--target-url", default="http://127.0.0.1:9", help="[register] device base_url to submit")
     p.add_argument("--hostname-prefix", default="loadtest", help="[register] generated hostname prefix")

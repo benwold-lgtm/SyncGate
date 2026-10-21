@@ -138,7 +138,7 @@ def _pod_with_path_tool(path="/items/{item_id}"):
             )
         ],
     )
-    return DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    return DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
 
 
 @pytest.mark.asyncio
@@ -195,7 +195,7 @@ async def test_body_field_collision_sent_under_wire_name():
         return httpx.Response(status_code=200, content=b"{}", headers={"content-type": "application/json"})
 
     with patch("httpx.AsyncClient.request", fake_request):
-        pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+        pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
         await pod._tool_dispatch["t"](id="path-val", id__body=42)
 
     assert captured["url"] == "http://dev.local/users/path-val"  # path got the path arg

@@ -177,7 +177,6 @@ class Registry:
         base_url: str,
         spec_url: str | None = None,
         auth: AbstractAuth | None = None,
-        transport: str = "sse",
         rate_limit_rps: float | None = None,
         *,
         upstream_kind: str = "openapi",
@@ -186,9 +185,9 @@ class Registry:
         """POST semantics: create a new device."""
         up = (upstream_kind, upstream_transport)
         if self._mode == "distributed":
-            return await self._register_distributed(hostname, base_url, spec_url, auth, transport, rate_limit_rps, up)
+            return await self._register_distributed(hostname, base_url, spec_url, auth, rate_limit_rps, up)
         async with self._lock_for(hostname):
-            profile = await self._setup_device_nolock(hostname, base_url, spec_url, auth, transport, rate_limit_rps, up)
+            profile = await self._setup_device_nolock(hostname, base_url, spec_url, auth, rate_limit_rps, up)
         # Provision off the request path (F-11) so a slow/unreachable device or a
         # long spec discovery can't stall the POST; the fast path still returns ready.
         await self._provision_in_background(profile, wait_budget=self._registration_provision_budget)
@@ -258,7 +257,6 @@ class Registry:
         base_url: str,
         spec_url: str | None = None,
         auth: AbstractAuth | None = None,
-        transport: str = "sse",
         rate_limit_rps: float | None = None,
         *,
         keep_auth: bool = False,
@@ -298,13 +296,12 @@ class Registry:
                     spec_url,
                     prev.auth_type if prev else None,
                     prev.auth_config if prev else None,
-                    transport,
                     rate_limit_rps,
                     up,
                 )
                 cfg = await self._carry_credential_state(cfg, prev)
                 return await self._carry_fingerprint(cfg, prev)
-            cfg = await self._register_distributed(hostname, base_url, spec_url, auth, transport, rate_limit_rps, up)
+            cfg = await self._register_distributed(hostname, base_url, spec_url, auth, rate_limit_rps, up)
             return await self._carry_fingerprint(cfg, prev)
         async with self._lock_for(hostname):
             existing = self._profiles.get(hostname)
@@ -319,7 +316,7 @@ class Registry:
             if existing:
                 await self._pod_supervisor.kill(existing)
                 self._spec_service.invalidate(existing.base_url)
-            profile = await self._setup_device_nolock(hostname, base_url, spec_url, auth, transport, rate_limit_rps, up)
+            profile = await self._setup_device_nolock(hostname, base_url, spec_url, auth, rate_limit_rps, up)
         await self._carry_credential_state(profile.config, prev_config)
         await self._carry_fingerprint(profile.config, prev_fingerprint)
         # Re-provision off the request path (F-11), same as register_device.
@@ -374,7 +371,6 @@ class Registry:
         base_url: str,
         spec_url: str | None,
         auth: AbstractAuth | None,
-        transport: str,
         rate_limit_rps: float | None,
         upstream: tuple[str, str] = ("openapi", "http"),
     ) -> DeviceConfig:
@@ -383,7 +379,7 @@ class Registry:
         if auth_config_str:
             auth_config_str = self._codec.encrypt(auth_config_str)
         return await self._write_distributed(
-            hostname, base_url, spec_url, auth_type, auth_config_str, transport, rate_limit_rps, upstream
+            hostname, base_url, spec_url, auth_type, auth_config_str, rate_limit_rps, upstream
         )
 
     async def _write_distributed(
@@ -393,7 +389,6 @@ class Registry:
         spec_url: str | None,
         auth_type: str | None,
         auth_config_str: str | None,
-        transport: str,
         rate_limit_rps: float | None,
         upstream: tuple[str, str] = ("openapi", "http"),
     ) -> DeviceConfig:
@@ -407,7 +402,6 @@ class Registry:
             hostname=hostname,
             base_url=base_url,
             spec_url=spec_url,
-            transport=transport,
             auth_type=auth_type,
             auth_config=auth_config_str,
             rate_limit_rps=rate_limit_rps,
@@ -429,7 +423,6 @@ class Registry:
         base_url: str,
         spec_url: str | None,
         auth: AbstractAuth | None,
-        transport: str,
         rate_limit_rps: float | None,
         upstream: tuple[str, str] = ("openapi", "http"),
     ) -> DeviceProfile:
@@ -439,7 +432,6 @@ class Registry:
             hostname=hostname,
             base_url=base_url,
             spec_url=spec_url,
-            transport=transport,
             auth_type=auth_type,
             auth_config=auth_config_str,
             rate_limit_rps=rate_limit_rps,
@@ -456,7 +448,6 @@ class Registry:
                 {
                     "base_url": base_url,
                     "spec_url": spec_url,
-                    "transport": transport,
                     "auth_type": auth_type,
                     "auth_config": auth.to_dict() if auth else None,
                     "rate_limit_rps": rate_limit_rps,
@@ -536,7 +527,6 @@ class Registry:
                 hostname=record["hostname"],
                 base_url=record["base_url"],
                 spec_url=record.get("spec_url"),
-                transport=record.get("transport", "sse"),
                 rate_limit_rps=record.get("rate_limit_rps"),
                 upstream_kind=record.get("upstream_kind") or "openapi",
                 upstream_transport=record.get("upstream_transport") or "http",

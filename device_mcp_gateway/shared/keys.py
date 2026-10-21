@@ -127,10 +127,6 @@ class KeyBuilder:
         """Set of the handles one principal has minted, so listing them is not a scan."""
         return self._k(f"fleet_handles:owner:{owner}")
 
-    def fleet_tools(self, session_id: str) -> str:
-        """Display-name -> tool entry map for a fleet session."""
-        return self._k(f"fleet:{session_id}:tools")
-
     # --- worker membership and leases ---------------------------------------
 
     @property

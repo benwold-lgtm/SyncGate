@@ -141,7 +141,6 @@ async def test_header_param_cannot_override_auth():
         pod = DevicePod(
             hostname="dev",
             manifest=manifest,
-            transport="sse",
             base_url="http://dev.local",
             auth=ApiKeyAuth(api_key="real-token", header_name="Authorization"),
         )
@@ -189,7 +188,7 @@ async def test_tool_param_named_like_closure_var_does_not_collide():
         return _R()
 
     with patch("httpx.AsyncClient.request", fake_request):
-        pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+        pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
         # Before the factory fix this raised "got multiple values for argument 'tool'"
         # before any request was made; now it dispatches normally.
         await pod._tool_dispatch["t"](**{k: f"v_{k}" for k in reserved})
@@ -234,7 +233,7 @@ async def test_tools_call_rejects_invalid_arguments():
             )
         ],
     )
-    pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
     resp = await pod.call_tool(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_item", "arguments": {}}}
     )
@@ -247,7 +246,7 @@ async def test_tools_call_rejects_invalid_arguments():
 @pytest.mark.asyncio
 async def test_resources_read_blocks_traversal():
     manifest = McpManifest(server_name="m", server_version="1", hostname="dev", tools=[])
-    pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
     resp = await pod.call_tool(
         {
             "jsonrpc": "2.0",
@@ -324,7 +323,7 @@ async def test_oversized_response_is_capped():
         return _R()
 
     with patch("httpx.AsyncClient.request", fake_request):
-        pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+        pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
         result = await pod._tool_dispatch["big"]()
     # Normalized error envelope (F-39): ok=False, stable error.type, status carries 502.
     assert result["ok"] is False
@@ -399,7 +398,7 @@ async def test_ssrf_guard_transport_allow_private_follows_redirect():
 def test_device_pod_dispatch_client_does_not_follow_redirects():
     """The tool-dispatch hot path must not follow redirects (SSRF + header-leak via 3xx)."""
     manifest = McpManifest(server_name="m", server_version="1", hostname="dev")
-    pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
     assert pod._client().follow_redirects is False
 
 
@@ -448,7 +447,7 @@ def test_device_pod_dispatch_client_is_ssrf_guarded():
     from device_mcp_gateway.security.url_policy import SsrfGuardTransport
 
     manifest = McpManifest(server_name="m", server_version="1", hostname="dev")
-    pod = DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    pod = DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
     client = pod._client()
     assert isinstance(client._transport, SsrfGuardTransport)
     assert client.follow_redirects is False
@@ -489,9 +488,7 @@ def test_device_pod_propagates_egress_policy_to_oauth2_auth():
 
     auth = OAuth2Auth(token_endpoint="https://idp.example.com/token", client_id="id", client_secret="secret")
     manifest = McpManifest(server_name="m", server_version="1", hostname="dev")
-    DevicePod(
-        hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local", auth=auth, allow_private=True
-    )
+    DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local", auth=auth, allow_private=True)
     assert auth._allow_private is True
 
 

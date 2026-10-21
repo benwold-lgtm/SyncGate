@@ -530,7 +530,6 @@ async def test_an_embedded_database_from_before_this_change_still_accepts_writes
         "restored",
         {
             "base_url": "http://restored",
-            "transport": "sse",
             "credential_state": CREDENTIAL_STATE_NEEDS_RECONNECT,
         },
     )

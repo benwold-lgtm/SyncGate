@@ -28,7 +28,7 @@ HOST_B = "sf-fleet-b.local"
 def _register(client, hostname, mock_target_url):
     resp = client.post(
         "/v1/devices",
-        json={"hostname": hostname, "base_url": mock_target_url, "auth_type": "none", "transport": "sse"},
+        json={"hostname": hostname, "base_url": mock_target_url, "auth_type": "none"},
     )
     assert resp.status_code == 200, f"Registration failed for {hostname}: {resp.json()}"
 
@@ -296,20 +296,14 @@ def test_a_batched_request_is_refused_with_a_reason(client, fleet):
     assert "batch" in resp.text.lower()
 
 
-def test_the_fleet_transport_enforces_the_same_scope_as_the_sse_fleet_route():
-    """A second transport must not become a way around authorization.
-
-    Compared against the SSE fleet route rather than hard-coded. Reads the routers directly —
-    see tests/test_streamable_http.py::_route_scopes for why not a built app.
-    """
-    from device_mcp_gateway.api import fleet as fleet_routes
+def test_every_fleet_mcp_route_requires_tools_call():
+    """Asserted directly since the HTTP+SSE fleet route it used to be compared with is gone."""
+    from device_mcp_gateway.api import fleets as handle_routes
     from device_mcp_gateway.api import streamable_fleet as sf_routes
 
     from .test_streamable_http import _route_scopes
 
-    legacy = _route_scopes(fleet_routes.router, "/fleet/messages", "POST")
-    assert "tools:call" in legacy, legacy
-
     for method in ("POST", "GET", "DELETE"):
-        new = _route_scopes(sf_routes.router, "/fleet/mcp", method)
-        assert set(legacy) <= set(new), f"{method} /fleet/mcp requires {new}, weaker than /fleet/messages {legacy}"
+        assert "tools:call" in _route_scopes(sf_routes.router, "/fleet/mcp", method)
+    for path, method in (("/fleet/{handle}/mcp", "POST"), ("/fleets", "POST"), ("/fleets", "GET")):
+        assert "tools:call" in _route_scopes(handle_routes.router, path, method), (path, method)

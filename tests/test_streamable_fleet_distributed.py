@@ -63,7 +63,7 @@ class _StubRegistry:
         active = self._devices.get(hostname)
         if active is None:
             return None
-        return DeviceConfig(hostname=hostname, base_url=f"http://{hostname}", pod_active=active, transport="sse")
+        return DeviceConfig(hostname=hostname, base_url=f"http://{hostname}", pod_active=active)
 
     async def get_manifest(self, hostname):
         return self._manifests.get(hostname)
@@ -175,30 +175,6 @@ def test_a_fleet_session_is_bound_to_the_principal_that_opened_it(monkeypatch):
         deleted = client.request("DELETE", FLEET, headers={SESSION_HEADER: "s-owned"})
     assert resp.status_code == 403, resp.text
     assert deleted.status_code == 403, "another principal must not terminate someone else's session"
-
-
-def test_a_streamable_opened_fleet_session_is_usable_on_the_sse_route(monkeypatch):
-    """The one reason this transport writes the fleet tools table at all.
-
-    Nothing on the Streamable HTTP path reads that table — it rebuilds the manifest per
-    request — so the write looks removable until you notice the *SSE* fleet route reads it.
-    Keeping a session usable across both fleet transports matters while HTTP+SSE is being
-    retired: a client can move to the new transport without its existing session dying.
-
-    Pinned here because it is otherwise accidental, and the next person tidying up an
-    apparently unread write would silently break it.
-    """
-    app, _ = _app(
-        {"a": True, "b": True}, {"a": {"tools": [_tool("get_status")]}, "b": {"tools": [_tool("reboot")]}}, monkeypatch
-    )
-
-    with TestClient(app) as client:
-        session_id = _init(client, "a,b")
-        legacy = client.post(f"/v1/fleet/messages?session_id={session_id}", json=_rpc(2, "tools/list"))
-
-    assert legacy.status_code == 200, legacy.text
-    names = sorted(t["name"] for t in legacy.json()["result"]["tools"])
-    assert names == ["a_get_status", "b_reboot"], names
 
 
 # --- dispatch resolution -------------------------------------------------------

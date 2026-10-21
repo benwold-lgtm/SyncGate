@@ -66,7 +66,7 @@ from device_mcp_gateway.registry.validation import (  # noqa: F401  (re-exported
     _parse_rate_limit,
     _read_upstream,
     _validate_hostname,
-    _validate_transport,
+    refuse_transport,
     _validate_upstream,
     check_credential_form,
     validate_device_registration,
@@ -296,7 +296,6 @@ async def _apply_register(data: dict, request: Request) -> DeviceMutationResult:
     # All body validation happens before the existence check, so a malformed or
     # unsupported request is rejected without a registry round-trip. The gates are the
     # shared ones (F-67) — the same call restore makes, so neither path can drift.
-    transport = data.get("transport") or cfg.get("transport", {}).get("default", "sse")
     spec_url = data.get("spec_url")
     upstream_kind, upstream_transport = _read_upstream(data)
     # Built BEFORE the gates, not after, so `validate_device_registration` can see the
@@ -307,7 +306,6 @@ async def _apply_register(data: dict, request: Request) -> DeviceMutationResult:
         hostname=hostname,
         base_url=base_url,
         spec_url=spec_url,
-        transport=transport,
         upstream_kind=upstream_kind,
         upstream_transport=upstream_transport,
         declared=set(data.keys()),
@@ -335,7 +333,6 @@ async def _apply_register(data: dict, request: Request) -> DeviceMutationResult:
         base_url=base_url,
         spec_url=spec_url,
         auth=auth,
-        transport=transport,
         rate_limit_rps=rate_limit_rps,
         upstream_kind=upstream_kind,
         upstream_transport=upstream_transport,
@@ -411,8 +408,7 @@ async def _apply_update(hostname: str, data: dict, request: Request) -> DeviceMu
         # Fernet ciphertext, and parsing it as JSON failed and silently wiped the
         # device's credentials. Let the registry carry the stored record verbatim.
         keep_auth = True
-    transport = data.get("transport") or existing.transport
-    _validate_transport(transport)
+    refuse_transport(set(data.keys()))
     rate_limit_rps = _parse_rate_limit(data)
     upstream_kind, upstream_transport = _read_upstream(data, existing.upstream_kind, existing.upstream_transport)
     _validate_upstream(upstream_kind, upstream_transport, spec_url, declared=set(data.keys()))
@@ -426,7 +422,6 @@ async def _apply_update(hostname: str, data: dict, request: Request) -> DeviceMu
         base_url=base_url,
         spec_url=spec_url,
         auth=auth,
-        transport=transport,
         rate_limit_rps=rate_limit_rps,
         keep_auth=keep_auth,
         upstream_kind=upstream_kind,
@@ -675,7 +670,6 @@ async def device_diagnostics(hostname: str, request: Request):
         mode=mode,
         base_url=device.base_url,
         spec_url=device.spec_url,
-        transport=device.transport,
         upstream_kind=device.upstream_kind,
         reachable=device.reachable,
         pod_active=device.pod_active,

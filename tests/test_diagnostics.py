@@ -30,7 +30,7 @@ def _pod():
         hostname="dev",
         tools=[McpTool(name="t", description="d", schema={"type": "object"}, method="GET", path="/x")],
     )
-    return DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    return DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
 
 
 def test_breaker_snapshot_reports_closed_state():
@@ -92,7 +92,7 @@ def _app(mode, registry, monkeypatch):
 
 
 def _device(**over):
-    base = dict(hostname="dev", base_url="http://dev.local", transport="sse", reachable=True, pod_active=True)
+    base = dict(hostname="dev", base_url="http://dev.local", reachable=True, pod_active=True)
     base.update(over)
     return DeviceConfig(**base)
 

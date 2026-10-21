@@ -60,7 +60,6 @@ def test_exposition_contains_expected_metric_names():
         "mcp_registered_devices",
         "mcp_active_pods",
         "mcp_reachable_devices",
-        "mcp_active_sse_connections",
     ):
         assert name in body
 

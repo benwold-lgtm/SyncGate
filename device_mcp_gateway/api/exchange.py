@@ -3,18 +3,17 @@
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
 """Request/response exchange — deliver a JSON-RPC message and return its response *here*.
 
-The existing SSE transport is fire-and-forget at the HTTP layer: a `POST /messages` is
-acknowledged, and the JSON-RPC response arrives later on a stream the client already holds
-open. Streamable HTTP inverts that — the response belongs to the POST that carried the
-request — and that inversion, not the framing, is the actual work.
+On Streamable HTTP the response belongs to the POST that carried the request. (HTTP+SSE,
+removed in 0.4.0, acknowledged the POST and delivered the response later on a stream the
+client held open elsewhere.) Answering *here* is the actual work.
 
 In embedded mode it is trivial: the pod is in this process, so awaiting it is a call.
 
 In distributed mode it is the hard part of Phase 6, and it is why this seam exists at all.
 The POST can land on any gateway replica, while the device is owned by one worker and the
 result is published to Redis. The replica handling the POST therefore has to *wait* on a
-result it does not produce, correlating by JSON-RPC id — where today it merely publishes the
-call and lets whichever replica holds the SSE stream do the delivering.
+result it does not produce: on its session's stream, correlated by JSON-RPC id, or for a
+stateless call on the call's own reply stream (ADR-0027 §1).
 
 Defining the boundary now means the distributed implementation is a new subclass rather than
 a rewrite of the endpoint that calls it. The endpoints depend on this interface only.
