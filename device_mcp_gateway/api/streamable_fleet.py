@@ -26,12 +26,13 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from loguru import logger
 
-from device_mcp_gateway import fleet_service, metrics
+from device_mcp_gateway import __version__, fleet_service, metrics
 from device_mcp_gateway.api.dispatch import _GATEWAY_ID
 from device_mcp_gateway.api.exchange import ExchangeTimeout, ExchangeUnavailable
 from device_mcp_gateway.api.streamable import (
@@ -41,6 +42,7 @@ from device_mcp_gateway.api.streamable import (
     _read_payload,
 )
 from device_mcp_gateway.audit import audit_log
+from device_mcp_gateway.core import protocol
 from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, RPC_NO_WORKER, rpc_error
 from device_mcp_gateway.fleet_service import FleetManifest, fleet_initialize_response
 from device_mcp_gateway.ratelimit import rate_limit, rate_limit_principal
@@ -149,12 +151,39 @@ def _resolve_hostnames(devices: str | None, cfg: dict[str, Any]) -> list[str]:
     ],
 )
 async def fleet_streamable_post(request: Request, response: Response, devices: str | None = Query(default=None)):
-    """Accept one JSON-RPC message for a fleet session and answer it on this response."""
-    _check_accept(request)
+    """Accept one JSON-RPC message for a fleet session and answer it on this response.
 
-    reg: Registry = request.app.state.registry
-    cfg = request.app.state.config
+    The handshake era only, and deprecated from 0.4.0 (ADR-0027 §5): with no ``initialize``
+    there is nothing to fix a ``?devices=`` fleet on, so a stateless request is pointed at
+    ``POST /v1/fleets``, whose handle is a URL that serves both eras.
+    """
+    _check_accept(request)
     payload = await _read_payload(request)
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</v1/fleets>; rel="successor-version"'
+    if protocol.is_modern_request(request.headers, payload):
+        body = protocol.rpc_failure(
+            payload.get("id"),
+            protocol.INVALID_REQUEST,
+            "A stateless (2026-07-28) fleet needs a handle: mint one with POST /v1/fleets and use "
+            "/v1/fleet/{handle}/mcp. ?devices= fixes the fleet on initialize, which this era does not have.",
+        )
+        return Response(
+            content=json.dumps(body), media_type="application/json", status_code=400, headers=dict(response.headers)
+        )
+    cfg = request.app.state.config
+    return await serve_fleet_handshake(request, response, payload, lambda: _resolve_hostnames(devices, cfg))
+
+
+async def serve_fleet_handshake(
+    request: Request, response: Response, payload: dict[str, Any], init_hostnames: Callable[[], list[str]]
+) -> Response:
+    """One handshake-era fleet message. ``init_hostnames`` fixes the set on ``initialize``.
+
+    Shared by ``?devices=`` (the set comes from the query) and a fleet handle (the set it was
+    minted with). After ``initialize`` the session carries the set, as ADR-0008 decided.
+    """
+    reg: Registry = request.app.state.registry
     method = payload.get("method", "")
     msg_id = payload.get("id")
     _principal = getattr(request.state, "principal", None)
@@ -167,7 +196,7 @@ async def fleet_streamable_post(request: Request, response: Response, devices: s
     if method == "initialize":
         # `devices` is required here and ignored afterwards: the session carries the fleet,
         # so a later request cannot quietly widen it by passing a longer list.
-        hostnames = _resolve_hostnames(devices, cfg)
+        hostnames = init_hostnames()
         manifest, skipped = await fleet_service.build_fleet_manifest(reg, hostnames)
         if not manifest.hostnames:
             raise HTTPException(status_code=404, detail=f"No reachable devices among: {hostnames}")
@@ -265,6 +294,96 @@ async def fleet_streamable_post(request: Request, response: Response, devices: s
     if msg_id is not None:
         return _json(rpc_error(RPC_METHOD_NOT_FOUND, msg_id, message=f"Method not found: {method}"), response)
     return Response(status_code=202, headers=dict(response.headers))
+
+
+async def serve_fleet_modern(request: Request, payload: dict[str, Any], hostnames: list[str]) -> Response:
+    """One stateless (2026-07-28) message for a fleet whose device set is already fixed.
+
+    Reached only through a fleet handle, which fixed ``hostnames`` when it was minted. Each
+    method rebuilds the aggregate from the members' current manifests, so a deregistered or
+    down member drops out and an F-41 tool change shows up on the next request, with nothing
+    cached to invalidate.
+    """
+    msg_id = payload.get("id")
+    version = request.headers.get(protocol.PROTOCOL_VERSION_HEADER)
+
+    def answer(body: dict[str, Any]) -> Response:
+        return Response(
+            content=json.dumps(body), media_type="application/json", status_code=protocol.http_status_for(body)
+        )
+
+    if "id" not in payload:
+        if version not in protocol.MODERN_PROTOCOL_VERSIONS:
+            return answer(protocol.unsupported_version(None, version, protocol.MODERN_PROTOCOL_VERSIONS))
+        return Response(status_code=202)
+    for header in (protocol.PROTOCOL_VERSION_HEADER, protocol.METHOD_HEADER, protocol.NAME_HEADER):
+        if len(request.headers.getlist(header)) > 1:
+            return answer(
+                protocol.rpc_failure(msg_id, protocol.HEADER_MISMATCH, f"{header} header appears more than once")
+            )
+    refusal = protocol.classify_modern(payload, request.headers)
+    if refusal is not None:
+        return answer(refusal)
+
+    method = payload.get("method", "")
+    reg: Registry = request.app.state.registry
+    _principal = getattr(request.state, "principal", None)
+    _subject = _principal.subject if _principal else "unknown"
+    _rid = getattr(request.state, "request_id", "-")
+
+    def shaped(body: dict[str, Any] | None) -> Response:
+        out = protocol.modern_response(method, body, server_name="mcp-fleet", server_version=__version__)
+        return Response(status_code=202) if out is None else answer(out)
+
+    if method == "server/discover":
+        return shaped(
+            {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": protocol.discover_result(
+                    server_name="mcp-fleet", server_version=__version__, capabilities=protocol.FLEET_CAPABILITIES
+                ),
+            }
+        )
+    if method == "tools/list":
+        manifest, skipped = await fleet_service.build_fleet_manifest(reg, hostnames)
+        if skipped:
+            logger.info(f"Fleet tools/list skipped unavailable members: {skipped}")
+        return shaped(fleet_service.aggregate_tools_list_result(manifest, msg_id))
+    if method == "tools/call":
+        manifest, _skipped = await fleet_service.build_fleet_manifest(reg, hostnames)
+        outcome = fleet_service.rewrite_tools_call(manifest, payload)
+        if isinstance(outcome, dict):
+            return shaped(outcome)  # unknown tool: becomes -32602 in this era
+        hostname, rewritten = outcome
+        _t = time.perf_counter()
+        try:
+            result = await _exchange_for(request).exchange(
+                hostname, rewritten, session_id="", subject=_subject, rid=_rid
+            )
+        except ExchangeUnavailable as exc:
+            if exc.status_code == 404:
+                return shaped(rpc_error(RPC_NO_WORKER, msg_id, message=f"Device '{hostname}' is no longer active"))
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except ExchangeTimeout as exc:
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        _status = "error" if isinstance(result, dict) and "error" in result else "ok"
+        metrics.tool_calls_total.labels(hostname=hostname, method="tools/call", status=_status).inc()
+        metrics.tool_call_duration_seconds.labels(hostname=hostname).observe(time.perf_counter() - _t)
+        audit_log(
+            "fleet tool dispatch",
+            hostname=hostname,
+            subject=_subject,
+            method="tools/call",
+            status=_status,
+            duration_ms=round((time.perf_counter() - _t) * 1000, 1),
+            rid=_rid,
+            transport="streamable-http",
+            era="stateless",
+        )
+        return shaped(result)
+    # A fleet serves tools only (ADR-0008); resources and prompts are not aggregated.
+    return answer(protocol.rpc_failure(msg_id, protocol.METHOD_NOT_FOUND, "Method not found", method))
 
 
 def _json(body: dict[str, Any], response: Response) -> Response:

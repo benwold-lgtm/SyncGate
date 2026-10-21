@@ -39,6 +39,7 @@ from device_mcp_gateway.api import fleet as api_fleet
 from device_mcp_gateway.api import probes as api_probes
 from device_mcp_gateway.api import sse as api_sse
 from device_mcp_gateway.api import streamable as api_streamable
+from device_mcp_gateway.api import fleets as api_fleets
 from device_mcp_gateway.api import streamable_fleet as api_streamable_fleet
 from device_mcp_gateway.api import notifications as api_notifications
 from device_mcp_gateway.api import support_requests as api_support_requests
@@ -307,6 +308,11 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
     # from fleet_transports because this transport has no stream and so needs no transport
     # object — only the device list the session was opened over, to rebuild its manifest.
     _app.state.fleet_hosts = {}
+    # Fleet handles (ADR-0027 §5). In-process until the mode's durable store replaces it below:
+    # SQLite beside the devices table in embedded mode, Redis in distributed mode.
+    from device_mcp_gateway.fleet_handles import MemoryFleetHandles
+
+    _app.state.fleet_handles = MemoryFleetHandles()
     # Short-TTL cache for the UI read aggregate (SRE O4) so a polling dashboard
     # doesn't trigger a fresh list_devices() on every request. Per-replica; ETag is
     # a content hash so it's stable across replicas.
@@ -412,6 +418,9 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
         )
         _app.state.registry = _registry
         _app.state.store = _store
+        from device_mcp_gateway.fleet_handles import SqliteFleetHandles
+
+        _app.state.fleet_handles = SqliteFleetHandles(_db_path)
     else:
         # Distributed mode: registry created in lifespan after Redis connects.
         # Set a None placeholder so attribute access doesn't crash before lifespan.
@@ -449,6 +458,9 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
             app.state.pubsub_redis = pubsub_client
             app.state.session_router = SessionRouter(redis_client, pubsub_client)
             app.state.registry = registry
+            from device_mcp_gateway.fleet_handles import RedisFleetHandles
+
+            app.state.fleet_handles = RedisFleetHandles(redis_client)
             # Shared, async rate limiter across gateway replicas.
             app.state.rate_limiter = RedisRateLimiter(redis_client)
             logger.info("Rate limiter using shared Redis storage")
@@ -560,6 +572,7 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
     protected.include_router(api_streamable.router)
     protected.include_router(api_fleet.router)
     protected.include_router(api_streamable_fleet.router)
+    protected.include_router(api_fleets.router)
     protected.include_router(api_admin.router)
     protected.include_router(api_backup.router)
     # ── ADR-0022 (propose/review/apply) is NOT mounted — 2026-09-01 ───────────────────

@@ -455,6 +455,12 @@ async def restore_archive(
         #: presence means per-device credential results were deliberately not produced.
         "credential_store_error": cred_fleet_warning,
         "needs_reconnect": reconnect,
+        #: ADR-0027 §5 follow-up, said up front because a restore that silently left every
+        #: configured fleet URL answering 404 would read as a broken restore.
+        "not_carried": [
+            "fleet handles: an archive does not include them yet, so a restored stack has none; "
+            "re-mint them with POST /v1/fleets and update the URLs clients are configured with"
+        ],
         "devices": results,
     }
 
