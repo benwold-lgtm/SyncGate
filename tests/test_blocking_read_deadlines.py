@@ -166,32 +166,3 @@ async def test_a_result_still_arrives_promptly_under_a_socket_deadline(timed_red
 
     assert result is not None and result["result"] == {"ok": True}
     assert elapsed < 1.0, f"took {elapsed:.2f}s to read an already-published result"
-
-
-@pytest.mark.asyncio
-async def test_an_idle_stream_does_not_kill_an_open_sse_subscription(timed_redis):
-    """The same defect on the pre-existing SSE path.
-
-    ``subscribe`` has no deadline, so a raised TimeoutError propagated out of the generator
-    and ended the stream — which reaches the client as an unexplained disconnect on a session
-    they still hold open. Here the stream must survive an idle period longer than the socket
-    deadline and then still deliver.
-    """
-    import asyncio
-
-    router = SessionRouter(timed_redis, timed_redis)
-    received = []
-
-    async def reader():
-        async for message in router.subscribe("s-idle"):
-            received.append(message)
-            return  # one message is enough
-
-    task = asyncio.create_task(reader())
-    # Stay idle well past the 1s socket deadline before anything is published.
-    await asyncio.sleep(2.5)
-    assert not task.done(), "the subscription died while the stream was merely idle"
-
-    await router.publish_result("s-idle", {"jsonrpc": "2.0", "id": 1, "result": "after the idle gap"})
-    await asyncio.wait_for(task, timeout=5)
-    assert received and received[0]["result"] == "after the idle gap"

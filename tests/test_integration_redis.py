@@ -12,7 +12,6 @@ Redis and skip cleanly when none is reachable.
 Run with: pytest -m integration   (needs Redis at MCP_TEST_REDIS_URL)
 """
 
-import asyncio
 import json
 
 import pytest
@@ -146,49 +145,6 @@ async def test_register_sets_ttl(real_redis):
     assert 0 < ttl <= 120
 
 
-async def test_fleet_tools_roundtrip_and_cross_client_visibility(real_redis):
-    """A fleet session's display-name -> {hostname, real_name, ...} lookup table
-    (Phase 2) round-trips through real Redis, and is visible from a second
-    SessionRouter instance sharing the same Redis -- the scenario that matters
-    in production, where the POST may land on a different gateway replica than
-    the GET that opened the session."""
-    writer = SessionRouter(real_redis)
-    reader = SessionRouter(real_redis)
-    tools = {
-        "a_get_status": {"hostname": "a", "real_name": "get_status", "description": "d", "schema": {}},
-        "b_get_status": {"hostname": "b", "real_name": "get_status", "description": "d", "schema": {}},
-    }
-    await writer.set_fleet_tools("fleet-sess1", tools, ttl=120)
-    assert await reader.get_fleet_tools("fleet-sess1") == tools
-    ttl = await real_redis.ttl("fleet:fleet-sess1:tools")
-    assert 0 < ttl <= 120
-
-
-async def test_cross_client_pubsub_delivers_result(real_redis):
-    # Separate command vs pub/sub clients (as F3 wires them): a result published
-    # on one connection must reach a subscriber on the other.
-    import redis.asyncio as aioredis
-    from tests.conftest import TEST_REDIS_URL
-
-    pubsub_client = aioredis.from_url(TEST_REDIS_URL, decode_responses=True)
-    try:
-        router = SessionRouter(real_redis, pubsub_client=pubsub_client)
-        received = []
-
-        async def _consume():
-            async for msg in router.subscribe("s1"):
-                received.append(msg)
-                break
-
-        task = asyncio.create_task(_consume())
-        await asyncio.sleep(0.1)  # let the subscription attach
-        await router.publish_result("s1", {"ok": True})
-        await asyncio.wait_for(task, timeout=3)
-        assert received == [{"ok": True}]
-    finally:
-        await pubsub_client.aclose()
-
-
 # --- Worker (claim lease + result marker, real SET NX / TTL) ----------------
 
 
@@ -296,27 +252,3 @@ async def test_reconciler_skips_device_with_live_claim(real_redis):
 
 
 # --- Durable SSE result delivery (real Redis stream) — SRE #3 ---------------
-
-
-async def test_result_published_before_subscribe_survives(real_redis):
-    """A result appended before the gateway starts reading is still delivered —
-    the failure mode the pre-#3 pub/sub path could not survive."""
-    import redis.asyncio as aioredis
-    from tests.conftest import TEST_REDIS_URL
-
-    pubsub_client = aioredis.from_url(TEST_REDIS_URL, decode_responses=True)
-    try:
-        router = SessionRouter(real_redis, pubsub_client=pubsub_client)
-        await router.publish_result("s1", {"ok": True})  # arrives before any reader
-
-        received = []
-
-        async def _consume():
-            async for msg in router.subscribe("s1"):
-                received.append(msg)
-                break
-
-        await asyncio.wait_for(asyncio.create_task(_consume()), timeout=3)
-        assert received == [{"ok": True}]
-    finally:
-        await pubsub_client.aclose()

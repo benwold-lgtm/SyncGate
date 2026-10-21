@@ -18,7 +18,7 @@ from device_mcp_gateway.pods.device_pod import DevicePod
 
 def _pod(prompts):
     manifest = McpManifest(server_name="mcp-dev", server_version="1", hostname="dev", prompts=prompts)
-    return DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local")
+    return DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local")
 
 
 def _rpc(i, method, params=None):
@@ -91,7 +91,7 @@ async def test_a_translated_specs_prompt_round_trips_through_list_and_get():
         "paths": {"/items": {"get": {"operationId": "list_items", "responses": {"200": {"description": "ok"}}}}},
     }
     manifest = SpecTranslator().translate(spec, "sensor")
-    pod = DevicePod(hostname="sensor", manifest=manifest, transport="sse", base_url="http://sensor.local")
+    pod = DevicePod(hostname="sensor", manifest=manifest, base_url="http://sensor.local")
 
     [listed] = (await pod._handle_mcp_message(_rpc(7, "prompts/list")))["result"]["prompts"]
     got = await pod._handle_mcp_message(_rpc(8, "prompts/get", {"name": listed["name"]}))

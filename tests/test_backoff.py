@@ -192,7 +192,6 @@ async def test_pod_get_retries_transient_then_succeeds():
         pod = DevicePod(
             hostname="dev",
             manifest=manifest,
-            transport="sse",
             base_url="http://dev.local",
             retry_policy=RetryPolicy(max_retries=2, base_delay=0.0, max_delay=0.0),
         )

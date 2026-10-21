@@ -12,6 +12,30 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ### Read this before upgrading
 
+- **HTTP+SSE is removed** (roadmap decision 2): `GET /v1/devices/{hostname}/sse`,
+  `POST /v1/devices/{hostname}/messages`, and the SSE fleet (`GET /v1/fleet/sse`,
+  `POST /v1/fleet/messages`) are gone. Every device is served on
+  `/v1/devices/{hostname}/mcp` (Streamable HTTP), in both MCP eras. A client still configured
+  with an `/sse` URL gets 404: point it at `/mcp`. A fleet client either keeps
+  `/v1/fleet/mcp?devices=…` (handshake era, now deprecated) or mints a handle with
+  `POST /v1/fleets`. See [docs/upgrade.md](docs/upgrade.md#040-transport-removed).
+- **`transport` is refused** (roadmap decision 6). `POST`/`PUT /v1/devices` carrying a
+  `transport` key, `"sse"` included, gets a **400** naming the removal. Responses
+  (`/v1/devices`, `…/{hostname}`, `…/diagnostics`) stop carrying the field.
+  - **Existing devices are migrated, not refused:** the field is dropped when a stored record
+    is read, so upgrading takes nothing offline.
+  - **Restore:** a pre-0.4.0 archive still restores. Each device that carried the field reports
+    `dropped_fields: ["transport"]`, in the preview as well as the run.
+  - **Config:** `transport.default` and `transport.sse.*` are ignored, with a startup warning
+    naming them.
+  - **The console:** SyncGate-UI stopped sending the field in its #78, so it works against both
+    0.3.x and 0.4.0.
+- **Two metrics are removed:** `mcp_active_sse_connections` and
+  `mcp_sse_messages_dropped_total`. Both measured the SSE transport. Drop them from dashboards
+  and alert rules.
+- **`tools/loadtest/loadgen.py`** drives `/mcp`, with `--era stateless` (the default) or
+  `--era handshake`.
+
 - **`initialize` now advertises `2025-11-25` and `2025-06-18` only** (roadmap decision 3). A
   client asking for `2025-03-26` or `2024-11-05` is answered with `2025-11-25`, which the
   handshake specifies as "continue on this version or disconnect". Neither was ever tested

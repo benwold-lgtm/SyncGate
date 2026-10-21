@@ -163,7 +163,6 @@ async def test_sqlite_store_update_credentials_replaces_only_the_credential_blob
         {
             "base_url": "http://dev1",
             "spec_url": "http://dev1/spec",
-            "transport": "sse",
             "auth_type": "oauth2",
             "auth_config": {"type": "oauth2", "refresh_token": "original-rt"},
             "rate_limit_rps": 5.0,

@@ -136,18 +136,15 @@ class PodSupervisor:
             logger.warning(msg)
             profile.config.spawn_error = msg
             return
-        keep_alive = self._config.get("transport", {}).get("sse", {}).get("keep_alive_interval", 30)
         if profile.auth is not None and self._credential_writeback is not None:
             profile.auth.on_credentials_changed(self._credential_writeback(profile.hostname))
         pod_cls = McpProxyPod if is_proxy else DevicePod
         pod = pod_cls(
             hostname=profile.hostname,
             manifest=mcp_manifest,
-            transport=profile.transport,
             auth=profile.auth,
             base_url=profile.base_url,
             rate_limit_rps=profile.rate_limit_rps,
-            keep_alive_interval=keep_alive,
             retry_policy=self._retry_policy,
             tls_verify=self._tls.for_device(profile.hostname),
             allow_private=resolve_allow_private(self._config),

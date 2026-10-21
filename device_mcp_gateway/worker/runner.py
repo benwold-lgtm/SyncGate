@@ -136,7 +136,6 @@ class DeviceWorker:
         self._call_tasks: dict[str, asyncio.Task] = {}
         self._stop_event = asyncio.Event()
 
-        self._keep_alive = config.get("transport", {}).get("sse", {}).get("keep_alive_interval", 30)
         # Outbound mutual-TLS for device calls (F-31), resolved PER DEVICE (TG-4
         # residual): this worker's pods (tool calls), its cold-path spec fetches, and
         # the health loop's reachability/spec GETs all resolve the same profile for a
@@ -727,18 +726,16 @@ class DeviceWorker:
         pod = pod_cls(
             hostname=hostname,
             manifest=manifest_obj,
-            transport=cfg.transport,
             auth=auth,
             base_url=cfg.base_url,
             rate_limit_rps=cfg.rate_limit_rps,
-            keep_alive_interval=self._keep_alive,
             retry_policy=self._retry_policy,
             tls_verify=self._tls.for_device(hostname),
             allow_private=resolve_allow_private(self._config),
             allowed_ports=resolve_allowed_ports(self._config),
             credential_resolver=self._credential_resolver,
         )
-        await pod.start(with_sse=False)  # distributed mode: no in-process SSE transport
+        await pod.start()
         self._pods[hostname] = pod
         self._assigned.add(hostname)
         spawn_fields: dict[str, Any] = {"pod_active": True, "worker_id": self._id, "spawn_error": None}

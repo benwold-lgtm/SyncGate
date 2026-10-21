@@ -37,15 +37,7 @@ def _streamable(hostname):
     return client.post(f"/v1/devices/{hostname}/mcp", json=INIT, headers=ACCEPT)
 
 
-def _sse_post(hostname):
-    return client.post(f"/v1/devices/{hostname}/messages?session_id=x", json=INIT)
-
-
-def _sse_get(hostname):
-    return client.get(f"/v1/devices/{hostname}/sse")
-
-
-@pytest.mark.parametrize("call", [_streamable, _sse_post, _sse_get], ids=["streamable", "sse-messages", "sse-stream"])
+@pytest.mark.parametrize("call", [_streamable], ids=["streamable"])
 def test_registered_but_not_serving_is_503_with_retry_after(call):
     r = call(INACTIVE)
     assert r.status_code == 503, r.text
@@ -55,7 +47,7 @@ def test_registered_but_not_serving_is_503_with_retry_after(call):
     assert f"/v1/devices/{INACTIVE}" in detail  # points at where the reason is visible
 
 
-@pytest.mark.parametrize("call", [_streamable, _sse_post, _sse_get], ids=["streamable", "sse-messages", "sse-stream"])
+@pytest.mark.parametrize("call", [_streamable], ids=["streamable"])
 def test_unregistered_is_still_404(call):
     r = call("no-such-device-anywhere")
     assert r.status_code == 404, r.text

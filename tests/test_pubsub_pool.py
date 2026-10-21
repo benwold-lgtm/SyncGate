@@ -46,22 +46,11 @@ def test_session_router_falls_back_to_command_client():
 
 
 @pytest.mark.asyncio
-async def test_subscribe_runs_on_pubsub_client():
-    # End-to-end with one shared fakeredis instance passed as both clients:
-    # publishing on the command client reaches a subscriber on the pub/sub
-    # client (same backing store), proving subscribe() uses self._ps.
+async def test_a_reply_wait_runs_on_the_pubsub_client():
+    # One shared fakeredis instance passed as both clients: a result published on the command
+    # client is read by a waiter on the pub/sub client (same backing store), proving the
+    # blocking read uses self._ps and so cannot exhaust the command pool.
     shared = fakeredis.aioredis.FakeRedis(decode_responses=True)
     router = SessionRouter(shared, pubsub_client=shared)
-
-    received = []
-
-    async def _consume():
-        async for msg in router.subscribe("s1"):
-            received.append(msg)
-            break
-
-    task = asyncio.create_task(_consume())
-    await asyncio.sleep(0.05)
-    await router.publish_result("s1", {"ok": True})
-    await asyncio.wait_for(task, timeout=2)
-    assert received == [{"ok": True}]
+    await router.publish_reply("reply:r1", {"ok": True}, ttl=60)
+    assert await asyncio.wait_for(router.await_reply(["reply:r1"], timeout=2), timeout=3) == {"ok": True}

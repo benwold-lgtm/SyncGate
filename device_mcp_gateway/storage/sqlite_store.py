@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS devices (
     hostname           TEXT PRIMARY KEY,
     base_url           TEXT NOT NULL,
     spec_url           TEXT,
+    -- Vestigial since 0.4.0 (roadmap decision 6): neither written nor read. Kept so an existing
+    -- database needs no migration; new rows take the DEFAULT.
     transport          TEXT NOT NULL DEFAULT 'sse',
     auth_type          TEXT,
     auth_config        TEXT,
@@ -139,19 +141,18 @@ class SqliteDeviceStore(AbstractDeviceStore):
             await db.execute(
                 """
                 INSERT OR REPLACE INTO devices
-                    (hostname, base_url, spec_url, transport, auth_type, auth_config,
+                    (hostname, base_url, spec_url, auth_type, auth_config,
                      rate_limit_rps, upstream_kind, upstream_transport,
                      tls_spki_sha256, tls_cert_sha256, tls_issuer, tls_not_after,
                      declared_name, declared_version, fingerprint_state,
                      fingerprint_pinned_at, pending_tls_spki_sha256, fingerprint_policy,
                      credential_state, curated_spec)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hostname,
                     record["base_url"],
                     record.get("spec_url"),
-                    record.get("transport", "sse"),
                     record.get("auth_type"),
                     self._encrypt(json.dumps(auth_config)) if auth_config else None,
                     record.get("rate_limit_rps"),
@@ -232,7 +233,7 @@ class SqliteDeviceStore(AbstractDeviceStore):
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT hostname, base_url, spec_url, transport, auth_type, auth_config, "
+                "SELECT hostname, base_url, spec_url, auth_type, auth_config, "
                 "rate_limit_rps, upstream_kind, upstream_transport, "
                 "tls_spki_sha256, tls_cert_sha256, tls_issuer, tls_not_after, "
                 "declared_name, declared_version, fingerprint_state, "
@@ -257,7 +258,6 @@ class SqliteDeviceStore(AbstractDeviceStore):
                     "hostname": row["hostname"],
                     "base_url": row["base_url"],
                     "spec_url": row["spec_url"],
-                    "transport": row["transport"],
                     "auth_type": row["auth_type"],
                     "auth_config": auth_config,
                     "rate_limit_rps": row["rate_limit_rps"],

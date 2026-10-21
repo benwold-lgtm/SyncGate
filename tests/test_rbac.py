@@ -178,8 +178,8 @@ def test_viewer_can_read_but_not_mutate(monkeypatch):
     # Mutations and tool calls require scopes the viewer lacks → 403.
     assert client.post("/v1/devices", headers=h, json={"hostname": "x", "base_url": "http://x"}).status_code == 403
     assert client.delete("/v1/devices/x", headers=h).status_code == 403
-    assert client.get("/v1/devices/x/sse", headers=h).status_code == 403
-    assert client.post("/v1/devices/x/messages?session_id=s", headers=h, json={}).status_code == 403
+    assert client.post("/v1/devices/x/mcp", headers=h, json={}).status_code == 403
+    assert client.post("/v1/fleets", headers=h, json={"devices": ["x"]}).status_code == 403
 
 
 def test_admin_passes_authz_on_mutations(monkeypatch):

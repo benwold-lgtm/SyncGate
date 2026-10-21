@@ -46,12 +46,24 @@ def _validate_hostname(hostname: str) -> None:
         )
 
 
-def _validate_transport(transport: str) -> None:
-    if transport != "sse":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Transport '{transport}' is not supported in gateway mode; use 'sse'",
-        )
+#: Where a client refused for sending ``transport`` is pointed.
+TRANSPORT_REMOVED = (
+    "transport was removed in 0.4.0: every device is served on /v1/devices/{hostname}/mcp "
+    "(Streamable HTTP, both MCP eras), so the field selects nothing. Omit it. "
+    "See docs/upgrade.md#040-transport-removed"
+)
+
+
+def refuse_transport(declared: set[str]) -> None:
+    """Roadmap decision 6: a request carrying ``transport`` is refused, not silently obeyed.
+
+    On presence, whatever the value — ``"sse"`` included. Accepting and ignoring it would keep
+    a field that claims a choice which no longer exists, and would hide from the client that
+    the transport it names is gone. The 0.3.6 precedent for ``expected_tls_spki_sha256``: a
+    field the server would discard is refused instead.
+    """
+    if "transport" in declared:
+        raise HTTPException(status_code=400, detail=TRANSPORT_REMOVED)
 
 
 def _validate_upstream(kind: str, upstream_transport: str, spec_url: str | None, declared: set[str]) -> None:
@@ -139,7 +151,6 @@ def validate_device_registration(
     hostname: str,
     base_url: str,
     spec_url: str | None,
-    transport: str,
     upstream_kind: str,
     upstream_transport: str,
     declared: set[str],
@@ -156,7 +167,7 @@ def validate_device_registration(
     """
     _validate_hostname(hostname)
     _check_target_url(base_url, "base_url", allow_private, allowed_ports)
-    _validate_transport(transport)
+    refuse_transport(declared)
     _check_target_url(spec_url, "spec_url", allow_private, allowed_ports)
     _validate_upstream(upstream_kind, upstream_transport, spec_url, declared)
     check_credential_form(auth, require_references)

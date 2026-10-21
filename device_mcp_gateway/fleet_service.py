@@ -3,8 +3,8 @@
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
 """Fleet MCP sessions: aggregate multiple devices' tools into one MCP session.
 
-Every device today gets its own MCP session (``GET /v1/devices/{hostname}/sse``),
-so an MCP client wanting N devices needs N separate connections. This module
+Every device has its own MCP endpoint (``/v1/devices/{hostname}/mcp``), so an MCP
+client wanting N devices would otherwise need N separate connections. This module
 builds an aggregated, hostname-namespaced view of several devices' tools for a
 single session, and maps a client's ``tools/call`` back to the right device.
 
@@ -16,14 +16,13 @@ Redis call-stream) stays in the route handlers, not here.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
 
-from device_mcp_gateway import __version__, metrics
-from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, RPC_NO_WORKER, rpc_error
+from device_mcp_gateway import __version__
+from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, rpc_error
 from device_mcp_gateway.core.protocol import FLEET_CAPABILITIES, initialize_response
 from device_mcp_gateway.core.translator import _sanitize_name, dedupe_name
 
@@ -129,50 +128,3 @@ def fleet_initialize_response(msg_id: Any, params: Any) -> dict[str, Any]:
     return initialize_response(
         msg_id, params, server_name="mcp-fleet", server_version=__version__, capabilities=FLEET_CAPABILITIES
     )
-
-
-async def handle_fleet_message(reg: Any, manifest: FleetManifest, message: dict[str, Any]) -> dict[str, Any] | None:
-    """Dispatch one JSON-RPC message for a fleet session.
-
-    Mirrors ``BasePod._handle_mcp_message``'s method set (initialize/ping/
-    tools/list/tools/call) but aggregated across ``manifest``'s devices. Passed
-    as the ``message_handler`` to an ``SseTransport``, so — same contract as a
-    per-device pod — the return value here is what gets pushed onto the
-    session's SSE queue, not the HTTP POST response body.
-    """
-    method = message.get("method", "") if isinstance(message, dict) else ""
-    msg_id = message.get("id") if isinstance(message, dict) else None
-
-    if method == "initialize":
-        params = message.get("params") or {}
-        return fleet_initialize_response(msg_id, params)
-    if method.startswith("notifications/"):
-        return None
-    if method == "ping":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
-    if method == "tools/list":
-        return aggregate_tools_list_result(manifest, msg_id)
-    if method == "tools/call":
-        outcome = rewrite_tools_call(manifest, message)
-        if isinstance(outcome, dict):
-            return outcome  # already a JSON-RPC error (unknown tool name)
-        hostname, rewritten_message = outcome
-
-        # Re-check the device is still active -- it may have died since the
-        # fleet session opened, and one dead device shouldn't be able to hang
-        # or crash calls to the rest of the fleet in this same session.
-        profile = reg.get_profile(hostname)
-        if not profile or not profile.pod:
-            return rpc_error(RPC_NO_WORKER, msg_id, message=f"Device '{hostname}' is no longer active")
-
-        _t = time.perf_counter()
-        response = await profile.pod.call_tool(rewritten_message)
-        _dur = (time.perf_counter() - _t) * 1000
-        _status = "ok" if response and "result" in response else "error"
-        metrics.tool_calls_total.labels(hostname=hostname, method="tools/call", status=_status).inc()
-        metrics.tool_call_duration_seconds.labels(hostname=hostname).observe(_dur / 1000.0)
-        return response
-
-    if msg_id is not None:
-        return rpc_error(RPC_METHOD_NOT_FOUND, msg_id, message=f"Method not found: {method}")
-    return None

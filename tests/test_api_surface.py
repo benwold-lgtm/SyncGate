@@ -22,7 +22,6 @@ def _cfg(**over):
     base = dict(
         hostname="dev",
         base_url="http://dev.local",
-        transport="sse",
         spec_url="http://dev.local/openapi.json",
         auth_type="api_key",
         rate_limit_rps=5.0,
@@ -53,7 +52,6 @@ def test_summary_from_config_projects_lean_fields():
     assert s.model_dump() == {
         "hostname": "dev",
         "base_url": "http://dev.local",
-        "transport": "sse",
         "reachable": True,
         "pod_active": True,
         "last_check": 1234.5,

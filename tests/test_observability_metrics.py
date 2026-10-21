@@ -6,8 +6,7 @@
 Each failure site that previously only logged now also increments a Prometheus
 counter, so request loss/shedding is visible in metrics, not just logs:
 
-  - tool_call_timeouts_total     gateway F6 timeout watcher (main.py)
-  - sse_messages_dropped_total   embedded queue-full drop (sse_server.py)
+  - tool_call_timeouts_total     a request's exchange deadline passed (api/exchange.py)
   - dead_letter_total            undeliverable tool call (runner.py)
   - circuit_breaker_opens_total  device pod breaker open (device_pod.py)
 
@@ -22,9 +21,8 @@ import pytest
 
 from device_mcp_gateway import metrics
 from device_mcp_gateway.core.translator import McpManifest, McpTool
-from device_mcp_gateway.main import _acquire_gauge_leadership, _watch_tool_call_timeout
+from device_mcp_gateway.main import _acquire_gauge_leadership
 from device_mcp_gateway.pods.device_pod import DevicePod
-from device_mcp_gateway.pods.sse_server import SseTransport
 from device_mcp_gateway.worker.runner import DeviceWorker
 
 CONFIG = {"registry": {"health_check_interval": 30}}
@@ -68,62 +66,6 @@ async def test_refresh_sets_undelivered_gauge(monkeypatch):
     assert metrics.worker_undelivered_calls._value.get() == 8  # 4 per assigned device
 
 
-# --- tool_call_timeouts_total (gateway F6 watcher) ---------------------------
-
-
-@pytest.mark.asyncio
-async def test_timeout_watcher_increments_counter():
-    """When no worker sets the result marker before the deadline, the watcher
-    counts a timeout and emits the JSON-RPC error to the client's stream."""
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    published = []
-
-    class _Router:
-        async def publish_result(self, session_id, payload):
-            published.append((session_id, payload))
-
-    before = _counter(metrics.tool_call_timeouts_total, hostname="dev-to")
-    await _watch_tool_call_timeout(r, _Router(), "s1", "req-none", 9, timeout=0, hostname="dev-to")
-
-    assert _counter(metrics.tool_call_timeouts_total, hostname="dev-to") == before + 1
-    assert published and published[0][1]["error"]["code"] == -32001
-
-
-@pytest.mark.asyncio
-async def test_timeout_watcher_no_count_when_worker_responded():
-    """If the worker already wrote result:{id}, no timeout is counted."""
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    await r.set("result:req-done", "1")
-    before = _counter(metrics.tool_call_timeouts_total, hostname="dev-done")
-
-    async def _fail(*a, **k):  # publish_result must not be called
-        raise AssertionError("should not publish when worker responded")
-
-    class _Router:
-        publish_result = _fail
-
-    await _watch_tool_call_timeout(r, _Router(), "s1", "req-done", 9, timeout=0, hostname="dev-done")
-    assert _counter(metrics.tool_call_timeouts_total, hostname="dev-done") == before
-
-
-# --- sse_messages_dropped_total (embedded backpressure) ----------------------
-
-
-@pytest.mark.asyncio
-async def test_sse_drop_increments_counter():
-    t = SseTransport("dev-sse", lambda m: None)
-    q = t.register_client("s1", "/endpoint")
-    while True:  # fill the queue so the next send is dropped
-        try:
-            q.put_nowait({"event": "message", "data": "x"})
-        except asyncio.QueueFull:
-            break
-    before = _counter(metrics.sse_messages_dropped_total, hostname="dev-sse")
-
-    assert await t.send_to_client("s1", {"x": 1}) is False
-    assert _counter(metrics.sse_messages_dropped_total, hostname="dev-sse") == before + 1
-
-
 # --- circuit_breaker_opens_total (device pod) --------------------------------
 
 
@@ -144,7 +86,7 @@ async def test_circuit_breaker_open_increments_counter():
             )
         ],
     )
-    pod = DevicePod(hostname="dev-cb", manifest=manifest, transport="sse", base_url="http://dev-cb.local")
+    pod = DevicePod(hostname="dev-cb", manifest=manifest, base_url="http://dev-cb.local")
     pod._breaker.open()  # force the breaker open so the next call is rejected
     before = _counter(metrics.circuit_breaker_opens_total, hostname="dev-cb")
 

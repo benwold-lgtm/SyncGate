@@ -35,9 +35,7 @@ from device_mcp_gateway.api import admin as api_admin
 from device_mcp_gateway.api import backup as api_backup
 from device_mcp_gateway.api import deadletter as api_deadletter
 from device_mcp_gateway.api import devices as api_devices
-from device_mcp_gateway.api import fleet as api_fleet
 from device_mcp_gateway.api import probes as api_probes
-from device_mcp_gateway.api import sse as api_sse
 from device_mcp_gateway.api import streamable as api_streamable
 from device_mcp_gateway.api import fleets as api_fleets
 from device_mcp_gateway.api import streamable_fleet as api_streamable_fleet
@@ -48,7 +46,7 @@ from device_mcp_gateway.api import write_planned as api_write_planned
 
 # Re-exported for tests and internal callers: these lived here before the router
 # split and their dotted paths are part of the de-facto internal API.
-from device_mcp_gateway.api.dispatch import _GATEWAY_ID, _watch_tool_call_timeout  # noqa: F401
+from device_mcp_gateway.api.dispatch import _GATEWAY_ID  # noqa: F401
 from device_mcp_gateway.bootstrap import apply_gateway_bootstrap
 from device_mcp_gateway.breakglass import InMemoryBreakGlassActivity, RedisBreakGlassActivity
 from device_mcp_gateway.cfg import (
@@ -56,6 +54,7 @@ from device_mcp_gateway.cfg import (
     resolve_bind_host,
     resolve_mode,
     tenant_notifications_max_retained,
+    warn_removed_settings,
     warn_unsafe_settings,
 )
 from device_mcp_gateway.core.correlation import use_request_id
@@ -269,6 +268,7 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
     # Surface permissive-by-default postures loudly at startup (Tier-1 F-53): open auth,
     # wildcard CORS, bind-all + no auth. Non-fatal — the hard refusals are the Tier-0 gates.
     warn_unsafe_settings(cfg, _mode, _authenticator.enabled)
+    warn_removed_settings(cfg)
 
     # ---------------------------------------------------------------------------
     # Synchronous pre-lifespan setup — state set here is available even when
@@ -301,12 +301,8 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
     # this one expires too: a client that opens a session per operation orphans one on
     # every crash, and a plain dict would never give the entry back.
     _app.state.session_owners = ExpiringOwners()
-    # Embedded-mode fleet sessions: session_id -> SseTransport. Distributed mode
-    # persists fleet session state in Redis instead of this in-process dict.
-    _app.state.fleet_transports = {}
-    # Embedded-mode Streamable HTTP fleet sessions: session_id -> [hostname, ...]. Separate
-    # from fleet_transports because this transport has no stream and so needs no transport
-    # object — only the device list the session was opened over, to rebuild its manifest.
+    # Embedded-mode handshake fleet sessions: session_id -> [hostname, ...], the device list
+    # the session was opened over, to rebuild its manifest per request.
     _app.state.fleet_hosts = {}
     # Fleet handles (ADR-0027 §5). In-process until the mode's durable store replaces it below:
     # SQLite beside the devices table in embedded mode, Redis in distributed mode.
@@ -408,7 +404,6 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
             config={
                 **cfg.get("registry", {}),
                 "discovery": cfg.get("discovery", {}),
-                "transport": cfg.get("transport", {}),
                 "security": cfg.get("security", {}),
                 "mode": "embedded",
             },
@@ -568,9 +563,7 @@ def create_app(override_config: dict | None = None, *, enable_write_planned: boo
     protected = APIRouter(dependencies=[Depends(authenticate_request), Depends(track_support_grant_inflight)])
     protected.include_router(api_devices.router)
     protected.include_router(api_deadletter.router)
-    protected.include_router(api_sse.router)
     protected.include_router(api_streamable.router)
-    protected.include_router(api_fleet.router)
     protected.include_router(api_streamable_fleet.router)
     protected.include_router(api_fleets.router)
     protected.include_router(api_admin.router)

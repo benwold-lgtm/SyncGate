@@ -501,6 +501,11 @@ async def _restore_one(
             OUTCOME_WOULD_RESTORE_NEEDS_RECONNECT,
         ):
             out["credential_warning"] = credential_warning
+        if "transport" in record:
+            # Roadmap decision 6: an archive is configuration, so a pre-0.4.0 one is restored
+            # rather than refused — the field it carries is dropped, and said so here, where a
+            # preview shows it before anything is written.
+            out["dropped_fields"] = ["transport"]
         return out
 
     upstream_kind = record.get("upstream_kind") or "openapi"
@@ -522,7 +527,6 @@ async def _restore_one(
             hostname=hostname,
             base_url=record.get("base_url") or "",
             spec_url=spec_url,
-            transport=record.get("transport") or "sse",
             upstream_kind=upstream_kind,
             upstream_transport=upstream_transport,
             declared={"upstream_kind"} if upstream_kind == "mcp" else set(),
@@ -561,7 +565,6 @@ async def _restore_one(
         base_url=record.get("base_url"),
         spec_url=spec_url,
         auth=auth,
-        transport=record.get("transport") or "sse",
         rate_limit_rps=record.get("rate_limit_rps"),
         upstream_kind=upstream_kind,
         upstream_transport=upstream_transport,

@@ -38,7 +38,6 @@ class DeviceConfig:
 
     hostname: str
     base_url: str
-    transport: str = "sse"
     spec_url: str | None = None
     auth_type: str | None = None
     auth_config: str | None = None  # Fernet-encrypted JSON string
@@ -166,7 +165,6 @@ class DeviceConfig:
         return cls(
             hostname=h["hostname"],
             base_url=h["base_url"],
-            transport=h.get("transport", "sse"),
             spec_url=_opt_str(h.get("spec_url", "")),
             auth_type=_opt_str(h.get("auth_type", "")),
             auth_config=_opt_str(h.get("auth_config", "")),

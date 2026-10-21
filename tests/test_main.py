@@ -99,22 +99,13 @@ def test_overview_publishes_when_a_reading_goes_stale():
     assert stale_after > interval
 
 
-def test_register_http_transport_returns_400():
-    response = client.post(
-        "/v1/devices",
-        json={"hostname": "x", "base_url": "http://x.local", "transport": "http"},
-    )
+@pytest.mark.parametrize("value", ["sse", "http", "stdio"])
+def test_register_with_transport_is_refused_whatever_its_value(value):
+    """Roadmap decision 6: the field selects nothing since 0.4.0, so it is refused on presence —
+    "sse" included — and the refusal names the removal rather than a supported value."""
+    response = client.post("/v1/devices", json={"hostname": "x", "base_url": "http://x.local", "transport": value})
     assert response.status_code == 400
-    assert "not supported" in response.json()["detail"]
-
-
-def test_register_stdio_transport_returns_400():
-    response = client.post(
-        "/v1/devices",
-        json={"hostname": "x", "base_url": "http://x.local", "transport": "stdio"},
-    )
-    assert response.status_code == 400
-    assert "not supported" in response.json()["detail"]
+    assert "removed in 0.4.0" in response.json()["detail"]
 
 
 def test_put_unknown_device_returns_404():
@@ -125,15 +116,14 @@ def test_put_unknown_device_returns_404():
     assert response.status_code == 404
 
 
-def test_put_unsupported_transport_with_existing_device():
-    # Register a device first (will fail to reach, but registers in the map)
+def test_put_with_transport_is_refused():
     client.post("/v1/devices", json={"hostname": "put-test", "base_url": "http://192.0.2.99", "auth_type": "none"})
     response = client.put(
         "/v1/devices/put-test",
-        json={"base_url": "http://192.0.2.99", "auth_type": "none", "transport": "stdio"},
+        json={"base_url": "http://192.0.2.99", "auth_type": "none", "transport": "sse"},
     )
     assert response.status_code == 400
-    assert "not supported" in response.json()["detail"]
+    assert "removed in 0.4.0" in response.json()["detail"]
     client.delete("/v1/devices/put-test")
 
 

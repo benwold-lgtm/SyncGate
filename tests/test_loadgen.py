@@ -14,9 +14,9 @@ import pytest
 from tools.loadtest.loadgen import (
     Stats,
     build_parser,
+    build_call,
+    classify_reply,
     format_report,
-    parse_sse_endpoint,
-    parse_sse_message,
     percentile,
 )
 
@@ -34,25 +34,32 @@ def test_percentile_empty_is_nan():
     assert math.isnan(percentile([], 99))
 
 
-def test_parse_sse_endpoint_extracts_url():
-    block = "event: endpoint\ndata: /v1/devices/dev1/messages?session_id=abc\n"
-    assert parse_sse_endpoint(block) == "/v1/devices/dev1/messages?session_id=abc"
+def test_a_stateless_call_carries_the_envelope_and_routing_headers():
+    body, headers = build_call("stateless", "1-1", "get_readings", {"sensor_id": 1})
+    meta = body["params"]["_meta"]
+    assert meta["io.modelcontextprotocol/protocolVersion"] == headers["MCP-Protocol-Version"] == "2026-07-28"
+    assert headers["Mcp-Method"] == "tools/call" and headers["Mcp-Name"] == "get_readings"
+    assert "Mcp-Session-Id" not in headers
 
 
-def test_parse_sse_endpoint_ignores_other_events():
-    assert parse_sse_endpoint('event: message\ndata: {"x": 1}\n') is None
-    assert parse_sse_endpoint(": keep-alive\n") is None
+def test_a_handshake_call_carries_its_session_and_no_envelope():
+    body, headers = build_call("handshake", "1-1", "t", {}, session_id="sess-9")
+    assert "_meta" not in body["params"] and headers["Mcp-Session-Id"] == "sess-9"
+    assert headers["MCP-Protocol-Version"] == "2025-11-25"
 
 
-def test_parse_sse_message_parses_json():
-    block = 'event: message\ndata: {"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n'
-    parsed = parse_sse_message(block)
-    assert parsed is not None and parsed["result"] == {"ok": True}
-
-
-def test_parse_sse_message_rejects_endpoint_and_bad_json():
-    assert parse_sse_message("event: endpoint\ndata: /x\n") is None
-    assert parse_sse_message("event: message\ndata: not-json\n") is None
+@pytest.mark.parametrize(
+    "status,body,verdict",
+    [
+        (200, {"result": {}}, "ok"),
+        (200, {"error": {"code": -32602}}, "rpc_error"),
+        (429, None, "throttled_429"),
+        (400, {"error": {}}, "post_400"),
+        (200, None, "bad_body"),
+    ],
+)
+def test_replies_are_bucketed(status, body, verdict):
+    assert classify_reply(status, body) == verdict
 
 
 def test_stats_report_shape_and_rates():

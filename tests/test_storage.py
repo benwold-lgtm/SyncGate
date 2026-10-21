@@ -28,7 +28,6 @@ async def test_save_and_load(store):
         {
             "base_url": "http://device.local",
             "spec_url": None,
-            "transport": "sse",
             "auth_type": "api_key",
             "auth_config": {"type": "api_key", "api_key": "secret", "header_name": "X-API-Key"},
         },
@@ -43,17 +42,17 @@ async def test_save_and_load(store):
 
 @pytest.mark.asyncio
 async def test_upsert_replaces_existing(store):
-    await store.save("dev", {"base_url": "http://a.local", "transport": "sse", "auth_type": None, "auth_config": None})
-    await store.save("dev", {"base_url": "http://b.local", "transport": "http", "auth_type": None, "auth_config": None})
+    await store.save("dev", {"base_url": "http://a.local", "auth_type": None, "auth_config": None})
+    await store.save("dev", {"base_url": "http://b.local", "auth_type": None, "auth_config": None})
     records = await store.load_all()
     assert len(records) == 1
     assert records[0]["base_url"] == "http://b.local"
-    assert records[0]["transport"] == "http"
+    assert "transport" not in records[0]  # vestigial column since 0.4.0: never read back
 
 
 @pytest.mark.asyncio
 async def test_delete_removes_record(store):
-    await store.save("dev", {"base_url": "http://x.local", "transport": "sse", "auth_type": None, "auth_config": None})
+    await store.save("dev", {"base_url": "http://x.local", "auth_type": None, "auth_config": None})
     await store.delete("dev")
     records = await store.load_all()
     assert records == []
@@ -70,7 +69,7 @@ async def test_multiple_devices(store):
     for i in range(3):
         await store.save(
             f"dev-{i}",
-            {"base_url": f"http://dev-{i}.local", "transport": "sse", "auth_type": None, "auth_config": None},
+            {"base_url": f"http://dev-{i}.local", "auth_type": None, "auth_config": None},
         )
     records = await store.load_all()
     assert len(records) == 3
@@ -91,7 +90,6 @@ async def test_encrypted_auth_config_roundtrip(db_path):
         "enc-device",
         {
             "base_url": "http://enc.local",
-            "transport": "sse",
             "auth_type": "api_key",
             "auth_config": {"type": "api_key", "api_key": "s3cr3t", "header_name": "X-API-Key"},
         },
@@ -112,7 +110,6 @@ async def test_key_rotation_loads_device_without_credentials(db_path):
         "rotated-device",
         {
             "base_url": "http://rotated.local",
-            "transport": "sse",
             "auth_type": "api_key",
             "auth_config": {"type": "api_key", "api_key": "secret"},
         },

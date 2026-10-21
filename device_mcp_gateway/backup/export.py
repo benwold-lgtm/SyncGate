@@ -84,7 +84,6 @@ _DEVICE_FIELDS = (
     "hostname",
     "base_url",
     "spec_url",
-    "transport",
     "auth_type",
     "rate_limit_rps",
     "upstream_kind",

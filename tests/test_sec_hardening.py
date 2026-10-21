@@ -126,13 +126,11 @@ def test_metrics_server_requires_bearer_token():
 # ---------------------------------------------------------------------------
 
 
-class _SseRegistry:
-    """Minimal registry: returns one pod-active SSE device for any hostname."""
+class _DeviceRegistry:
+    """Minimal registry: returns one pod-active device for any hostname."""
 
     def __init__(self):
-        self._device = DeviceConfig(
-            hostname="dev", base_url="http://dev.local", transport="sse", reachable=True, pod_active=True
-        )
+        self._device = DeviceConfig(hostname="dev", base_url="http://dev.local", reachable=True, pod_active=True)
 
     async def get_device(self, hostname):
         return self._device
@@ -141,7 +139,7 @@ class _SseRegistry:
         return None
 
 
-def _sse_app(monkeypatch):
+def _device_app(monkeypatch):
     cfg = {"registry": {"mode": "embedded"}, "metrics": {"enabled": False}}
     app = create_app(override_config=cfg)
 
@@ -151,30 +149,36 @@ def _sse_app(monkeypatch):
 
     app.router.lifespan_context = _noop_lifespan
     app.state.mode = "embedded"
-    app.state.registry = _SseRegistry()
+    app.state.registry = _DeviceRegistry()
     monkeypatch.setattr(app.state, "authenticator", Authenticator({}, enabled=False))  # caller = "anonymous"
     return app
 
 
-def test_messages_rejected_for_foreign_session(monkeypatch):
-    app = _sse_app(monkeypatch)
+def test_a_session_is_refused_to_a_principal_that_did_not_open_it(monkeypatch):
+    """F-37 on the device MCP endpoint: a session id is not a credential, so a second caller
+    holding one cannot graft onto it — neither to send on it nor to end it."""
+    app = _device_app(monkeypatch)
     app.state.session_owners["sess-1"] = "key:someone-else"  # opened by another principal
     with TestClient(app) as client:
-        resp = client.post(
-            "/v1/devices/dev/messages?session_id=sess-1",
+        post = client.post(
+            "/v1/devices/dev/mcp",
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"Mcp-Session-Id": "sess-1"},
         )
-    assert resp.status_code == 403
-    assert "different principal" in resp.json()["detail"]
+        delete = client.delete("/v1/devices/dev/mcp", headers={"Mcp-Session-Id": "sess-1"})
+    assert post.status_code == 403 and "different principal" in post.json()["detail"]
+    assert delete.status_code == 403
+    assert "sess-1" in app.state.session_owners  # the foreign DELETE ended nothing
 
 
-def test_messages_not_rejected_for_own_session(monkeypatch):
-    app = _sse_app(monkeypatch)
+def test_the_owner_passes_the_session_gate(monkeypatch):
+    app = _device_app(monkeypatch)
     app.state.session_owners["sess-2"] = "anonymous"  # matches the ANONYMOUS caller
     with TestClient(app) as client:
         resp = client.post(
-            "/v1/devices/dev/messages?session_id=sess-2",
+            "/v1/devices/dev/mcp",
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"Mcp-Session-Id": "sess-2"},
         )
     assert resp.status_code != 403  # owner gate passed (downstream dispatch may differ)
 

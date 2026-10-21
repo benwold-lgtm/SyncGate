@@ -265,7 +265,7 @@ def test_the_device_sees_the_id_the_caller_was_given(client, mock_target_url):
     hostname = "mock-iot-rid.local"
     reg = client.post(
         "/v1/devices",
-        json={"hostname": hostname, "base_url": mock_target_url, "auth_type": "none", "transport": "sse"},
+        json={"hostname": hostname, "base_url": mock_target_url, "auth_type": "none"},
     )
     assert reg.status_code == 200, reg.text
 
@@ -278,46 +278,33 @@ def test_the_device_sees_the_id_the_caller_was_given(client, mock_target_url):
     else:  # pragma: no cover - a pod that never spawns fails the assertions below anyway
         raise AssertionError("device pod did not become active")
 
-    with client.stream("GET", f"/v1/devices/{hostname}/sse") as event_resp:
-        assert event_resp.status_code == 200
-        session_id = None
-        event_name = None
-        data_payload = ""
-        posted = False
-        deadline = time.time() + 15
-        for line in event_resp.iter_lines():
-            if time.time() > deadline:
-                break
-            if line is None:
-                continue
-            line = line.strip()
-            if line == "":
-                if event_name == "endpoint" and "session_id=" in data_payload:
-                    session_id = data_payload.split("session_id=")[-1]
-                    device_request_ids.clear()
-                    send = client.post(
-                        f"/v1/devices/{hostname}/messages?session_id={session_id}",
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "tools/call",
-                            "params": {"name": "get_device_status", "arguments": {}},
-                        },
-                        headers={"X-Request-Id": "rid-end-to-end"},
-                    )
-                    assert send.status_code == 200
-                    # The gateway echoes the id it will log — the caller's half of the join.
-                    assert send.headers["X-Request-Id"] == "rid-end-to-end"
-                    posted = True
-                elif event_name == "message" and data_payload and posted:
-                    break
-                event_name = None
-                data_payload = ""
-                continue
-            if line.startswith("event:"):
-                event_name = line[len("event:") :].strip()
-            elif line.startswith("data:"):
-                data_payload += line[len("data:") :].strip()
+    device_request_ids.clear()
+    send = client.post(
+        f"/v1/devices/{hostname}/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_device_status",
+                "arguments": {},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        },
+        headers={
+            "X-Request-Id": "rid-end-to-end",
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "get_device_status",
+        },
+    )
+    assert send.status_code == 200, send.text
+    # The gateway echoes the id it will log — the caller's half of the join.
+    assert send.headers["X-Request-Id"] == "rid-end-to-end"
+    posted = True
 
     assert posted, "tool call was never sent"
     # …and the device's half. Same value, no gateway-side translation.

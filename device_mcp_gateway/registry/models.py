@@ -51,10 +51,6 @@ class DeviceProfile:
         return self.config.spec_url
 
     @property
-    def transport(self) -> str:
-        return self.config.transport
-
-    @property
     def rate_limit_rps(self) -> float | None:
         return self.config.rate_limit_rps
 

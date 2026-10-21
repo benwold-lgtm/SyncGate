@@ -58,16 +58,17 @@ def test_a_device_defaults_to_an_openapi_upstream():
     assert cfg.upstream_transport == "http"
 
 
-def test_upstream_transport_is_not_the_inbound_transport():
-    """``transport`` is how the pod serves its clients; ``upstream_transport`` is how the pod
-    reaches the upstream. A proxied MCP server is still served to clients over SSE."""
+def test_upstream_transport_is_the_only_transport_field():
+    """``upstream_transport`` is how the pod reaches the upstream. The inbound ``transport``
+    field it used to sit beside selected nothing once HTTP+SSE went (0.4.0) and is gone: every
+    device is served on Streamable HTTP."""
     cfg = DeviceConfig(
         hostname="dev1",
         base_url="http://dev1/mcp",
         upstream_kind="mcp",
         upstream_transport="http",
     )
-    assert cfg.transport == "sse", "the inbound transport must be unaffected by the upstream kind"
+    assert not hasattr(cfg, "transport")
     assert cfg.upstream_transport == "http"
 
 
@@ -80,7 +81,6 @@ def test_a_redis_hash_written_before_this_change_loads_as_openapi():
     pre_upgrade = {
         "hostname": "dev1",
         "base_url": "http://dev1",
-        "transport": "sse",
         "spec_url": "http://dev1/openapi.json",
         "auth_type": "api_key",
         "auth_config": "ciphertext",
@@ -103,7 +103,15 @@ def test_redis_hash_round_trip_preserves_an_mcp_upstream():
     cfg = DeviceConfig(hostname="dev1", base_url="http://dev1/mcp", upstream_kind="mcp", upstream_transport="http")
     back = DeviceConfig.from_redis_hash(cfg.to_redis_hash())
     assert (back.upstream_kind, back.upstream_transport) == ("mcp", "http")
-    assert back.transport == "sse"
+
+
+def test_a_stored_record_carrying_transport_is_migrated_not_refused():
+    """Roadmap decision 6: a Redis hash written before 0.4.0 still has ``transport``. It is
+    dropped on read, so an upgrade does not take every registered device offline."""
+    h = DeviceConfig(hostname="dev1", base_url="http://dev1").to_redis_hash()
+    h["transport"] = "sse"
+    cfg = DeviceConfig.from_redis_hash(h)
+    assert cfg.hostname == "dev1" and not hasattr(cfg, "transport")
 
 
 def test_an_empty_upstream_value_falls_back_rather_than_persisting_an_empty_kind():
@@ -143,7 +151,6 @@ async def test_sqlite_database_created_before_this_change_still_accepts_writes(t
         {
             "base_url": "http://remote/mcp",
             "spec_url": None,
-            "transport": "sse",
             "auth_type": None,
             "auth_config": None,
             "rate_limit_rps": None,
@@ -153,7 +160,7 @@ async def test_sqlite_database_created_before_this_change_still_accepts_writes(t
     )
     rows = {r["hostname"]: r for r in await store.load_all()}
     assert rows["proxied"]["upstream_kind"] == "mcp"
-    assert rows["proxied"]["transport"] == "sse"
+    assert "transport" not in rows["proxied"]  # the vestigial column is never read back
 
 
 @pytest.mark.asyncio
@@ -163,7 +170,7 @@ async def test_sqlite_save_defaults_a_record_that_omits_the_upstream_fields(tmp_
     await store.initialize()
     await store.save(
         "dev1",
-        {"base_url": "http://dev1", "spec_url": None, "transport": "sse", "auth_type": None, "auth_config": None},
+        {"base_url": "http://dev1", "spec_url": None, "auth_type": None, "auth_config": None},
     )
     row = (await store.load_all())[0]
     assert row["upstream_kind"] == "openapi"
@@ -226,12 +233,12 @@ def test_an_mcp_upstream_may_not_carry_a_spec_url(client):
     assert "spec_url" in resp.json()["detail"]
 
 
-def test_the_inbound_transport_is_still_restricted_to_sse(client):
-    """Guards the overload directly: adding an outbound transport field must not make the
-    inbound one negotiable."""
-    resp = _register(client, "uk-inbound", transport="http")
+def test_the_inbound_transport_field_is_refused(client):
+    """``upstream_transport`` is accepted; the inbound ``transport`` it must not be confused
+    with is refused outright since 0.4.0, whatever its value."""
+    resp = _register(client, "uk-inbound", transport="sse")
     assert resp.status_code == 400
-    assert "Transport" in resp.json()["detail"]
+    assert "removed in 0.4.0" in resp.json()["detail"]
 
 
 def test_an_mcp_upstream_registers_and_persists_its_kind(client, mock_target_url):
@@ -244,7 +251,7 @@ def test_an_mcp_upstream_registers_and_persists_its_kind(client, mock_target_url
         device = resp.json()["device"]
         assert device["upstream_kind"] == "mcp"
         assert device["upstream_transport"] == "http"
-        assert device["transport"] == "sse", "the inbound transport is unchanged by proxying"
+        assert "transport" not in device  # gone from responses as from requests (decision 6)
         assert client.get("/v1/devices/uk-mcp-live").json()["upstream_kind"] == "mcp"
     finally:
         client.delete("/v1/devices/uk-mcp-live")
@@ -272,7 +279,7 @@ def test_an_ordinary_registration_is_unaffected_and_reports_openapi(client):
         device = resp.json()["device"]
         assert device["upstream_kind"] == "openapi"
         assert device["upstream_transport"] == "http"
-        assert device["transport"] == "sse"
+        assert "transport" not in device
     finally:
         client.delete("/v1/devices/uk-plain")
 

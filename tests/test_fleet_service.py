@@ -10,11 +10,10 @@ get_device/get_manifest and sync get_profile surface fleet_service depends on.
 
 import pytest
 
-from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, RPC_NO_WORKER
+from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND
 from device_mcp_gateway.fleet_service import (
     aggregate_tools_list_result,
     build_fleet_manifest,
-    handle_fleet_message,
     rewrite_tools_call,
 )
 
@@ -187,82 +186,3 @@ async def test_rewrite_tools_call_unknown_name_returns_rpc_error():
     assert isinstance(result, dict)
     assert result["error"]["code"] == RPC_METHOD_NOT_FOUND
     assert result["id"] == 2
-
-
-# --- handle_fleet_message -------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_handle_initialize():
-    reg = _FakeReg(devices={}, manifests={})
-    manifest, _ = await build_fleet_manifest(reg, [])
-    resp = await handle_fleet_message(reg, manifest, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-    assert resp["result"]["serverInfo"]["name"] == "mcp-fleet"
-    assert "protocolVersion" in resp["result"]
-
-
-@pytest.mark.asyncio
-async def test_handle_ping():
-    reg = _FakeReg(devices={}, manifests={})
-    manifest, _ = await build_fleet_manifest(reg, [])
-    resp = await handle_fleet_message(reg, manifest, {"jsonrpc": "2.0", "id": 5, "method": "ping"})
-    assert resp == {"jsonrpc": "2.0", "id": 5, "result": {}}
-
-
-@pytest.mark.asyncio
-async def test_handle_notification_returns_none():
-    reg = _FakeReg(devices={}, manifests={})
-    manifest, _ = await build_fleet_manifest(reg, [])
-    resp = await handle_fleet_message(reg, manifest, {"method": "notifications/initialized"})
-    assert resp is None
-
-
-@pytest.mark.asyncio
-async def test_handle_tools_list():
-    reg = _FakeReg(devices={"a": True}, manifests={"a": {"tools": [_tool("get_status")]}})
-    manifest, _ = await build_fleet_manifest(reg, ["a"])
-    resp = await handle_fleet_message(reg, manifest, {"jsonrpc": "2.0", "id": 9, "method": "tools/list"})
-    assert resp["result"]["tools"][0]["name"] == "a_get_status"
-
-
-@pytest.mark.asyncio
-async def test_handle_tools_call_dispatches_to_resolved_pod():
-    pod = _FakePod()
-    reg = _FakeReg(
-        devices={"a": True},
-        manifests={"a": {"tools": [_tool("get_status")]}},
-        profiles={"a": _FakeProfile(pod)},
-    )
-    manifest, _ = await build_fleet_manifest(reg, ["a"])
-    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "a_get_status", "arguments": {}}}
-    resp = await handle_fleet_message(reg, manifest, message)
-    assert resp["result"]["content"][0]["text"] == "ok"
-    # the pod received the call with the real (unprefixed) tool name
-    assert pod.calls[0]["params"]["name"] == "get_status"
-
-
-@pytest.mark.asyncio
-async def test_handle_tools_call_unknown_tool():
-    reg = _FakeReg(devices={"a": True}, manifests={"a": {"tools": [_tool("get_status")]}})
-    manifest, _ = await build_fleet_manifest(reg, ["a"])
-    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "nope", "arguments": {}}}
-    resp = await handle_fleet_message(reg, manifest, message)
-    assert resp["error"]["code"] == RPC_METHOD_NOT_FOUND
-
-
-@pytest.mark.asyncio
-async def test_handle_tools_call_device_died_since_session_open():
-    # No profile registered for "a" -- simulates the pod having gone away.
-    reg = _FakeReg(devices={"a": True}, manifests={"a": {"tools": [_tool("get_status")]}}, profiles={})
-    manifest, _ = await build_fleet_manifest(reg, ["a"])
-    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "a_get_status", "arguments": {}}}
-    resp = await handle_fleet_message(reg, manifest, message)
-    assert resp["error"]["code"] == RPC_NO_WORKER
-
-
-@pytest.mark.asyncio
-async def test_handle_unknown_method_with_id_returns_error():
-    reg = _FakeReg(devices={}, manifests={})
-    manifest, _ = await build_fleet_manifest(reg, [])
-    resp = await handle_fleet_message(reg, manifest, {"jsonrpc": "2.0", "id": 3, "method": "bogus"})
-    assert resp["error"]["code"] == RPC_METHOD_NOT_FOUND

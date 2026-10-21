@@ -5,13 +5,10 @@
 Integration Test: Register Mock OpenAPI Device -> Verify Gateway Health & Metrics
 """
 
-import json
 import time
 from unittest.mock import AsyncMock
 
 import pytest
-
-from device_mcp_gateway import metrics as metrics_mod
 
 
 def test_register_and_metrics(client, mock_target_url):
@@ -22,7 +19,7 @@ def test_register_and_metrics(client, mock_target_url):
     4. Verify GET /health returns healthy status.
     """
     # 1. Register device pointing to our mock API
-    reg_payload = {"hostname": "mock-iot.local", "base_url": mock_target_url, "auth_type": "none", "transport": "sse"}
+    reg_payload = {"hostname": "mock-iot.local", "base_url": mock_target_url, "auth_type": "none"}
     reg_resp = client.post("/v1/devices", json=reg_payload)
     assert reg_resp.status_code == 200, f"Registration failed: {reg_resp.json()}"
     reg_data = reg_resp.json()
@@ -75,105 +72,6 @@ def test_register_and_metrics(client, mock_target_url):
     print("[+] Device removal verified")
 
     print("[PASS] Full integration test passed.")
-
-
-def test_sse_transport_client_flow(client, mock_target_url):
-    hostname = "mock-iot-sse.local"
-    reg_payload = {
-        "hostname": hostname,
-        "base_url": mock_target_url,
-        "auth_type": "none",
-        "transport": "sse",
-    }
-    reg_resp = client.post("/v1/devices", json=reg_payload)
-    assert reg_resp.status_code == 200, f"Registration failed: {reg_resp.json()}"
-
-    start = time.time()
-    while time.time() - start < 5:
-        dev_resp = client.get("/v1/devices")
-        assert dev_resp.status_code == 200
-        devices = dev_resp.json().get("devices", [])
-        mock_dev = next((d for d in devices if d["hostname"] == hostname), None)
-        if mock_dev and mock_dev.get("pod_active"):
-            break
-        time.sleep(0.2)
-    else:
-        raise AssertionError("SSE device pod did not become active")
-
-    # The gateway runs in-process (see the gateway_url fixture), so these are the
-    # same counter objects the request handler increments.
-    _ok = metrics_mod.tool_calls_total.labels(hostname=hostname, method="tools/call", status="ok")
-    _err = metrics_mod.tool_calls_total.labels(hostname=hostname, method="tools/call", status="error")
-    _ok_before, _err_before = _ok._value.get(), _err._value.get()
-
-    with client.stream("GET", f"/v1/devices/{hostname}/sse") as event_resp:
-        assert event_resp.status_code == 200
-
-        # Single-pass iterator: read endpoint event first (server-assigned session_id),
-        # then POST the tool call inside the loop, then read the message event.
-        # Two separate iter_lines() calls would raise StreamConsumed on the same stream.
-        session_id = None
-        data_line = None
-        event_name = None
-        data_payload = ""
-        _posted = False
-        deadline = time.time() + 15
-
-        for line in event_resp.iter_lines():
-            if time.time() > deadline:
-                break
-            if line is None:
-                continue
-            line = line.strip()
-            if line == "":
-                if event_name == "endpoint" and data_payload and "session_id=" in data_payload:
-                    session_id = data_payload.split("session_id=")[-1]
-                    send_resp = client.post(
-                        f"/v1/devices/{hostname}/messages?session_id={session_id}",
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "tools/call",
-                            "params": {"name": "get_device_status", "arguments": {}},
-                        },
-                    )
-                    assert send_resp.status_code == 200
-                    assert send_resp.json().get("status") == "accepted"
-                    _posted = True
-                elif event_name == "message" and data_payload and _posted:
-                    data_line = data_payload
-                    break
-                event_name = None
-                data_payload = ""
-                continue
-            if line.startswith("event:"):
-                event_name = line[len("event:") :].strip()
-                continue
-            if line.startswith("data:"):
-                data_payload += line[len("data:") :].strip()
-                continue
-
-        assert data_line is not None, "No SSE message event received"
-        rpc_response = json.loads(data_line)
-        assert "result" in rpc_response, f"Expected JSON-RPC result in SSE payload, got: {rpc_response}"
-        assert rpc_response["jsonrpc"] == "2.0"
-        assert rpc_response["id"] == 1
-        content = rpc_response["result"]["content"]
-        assert len(content) > 0, "Expected non-empty content in tools/call result"
-        tool_result = json.loads(content[0]["text"])
-        assert tool_result["body"]["status"] == "online"
-
-    # A call that returned real data must be counted (and audited) as a success.
-    # In embedded mode handle_message returns {"status": "accepted"} and the
-    # JSON-RPC result travels over SSE, so classifying on a "result" key scored
-    # every successful call as an error -- inverting both signals for the only
-    # mode this deployment runs in.
-    assert _ok._value.get() == _ok_before + 1, "successful embedded tools/call was not counted as ok"
-    assert _err._value.get() == _err_before, "successful embedded tools/call was miscounted as an error"
-
-    del_resp = client.delete(f"/v1/devices/{hostname}")
-    assert del_resp.status_code == 200
-    print("[PASS] SSE transport client flow verified.")
 
 
 @pytest.mark.asyncio
@@ -249,7 +147,6 @@ def test_register_unreachable_device_reports_failure(client):
             "hostname": hostname,
             "base_url": "http://192.0.2.1",  # TEST-NET, guaranteed unreachable
             "auth_type": "none",
-            "transport": "sse",
         },
     )
     assert resp.status_code == 200

@@ -23,7 +23,6 @@ class DeviceSummary(BaseModel):
 
     hostname: str
     base_url: str
-    transport: str
     reachable: bool
     pod_active: bool
     last_check: float | None = None
@@ -50,7 +49,6 @@ class DeviceSummary(BaseModel):
         return cls(
             hostname=cfg.hostname,
             base_url=cfg.base_url,
-            transport=cfg.transport,
             reachable=cfg.reachable,
             pod_active=cfg.pod_active,
             last_check=cfg.last_check or None,
@@ -105,7 +103,6 @@ class DeviceDetail(DeviceSummary):
         return cls(
             hostname=cfg.hostname,
             base_url=cfg.base_url,
-            transport=cfg.transport,
             reachable=cfg.reachable,
             pod_active=cfg.pod_active,
             last_check=cfg.last_check or None,
@@ -206,7 +203,6 @@ class DeviceDiagnostics(BaseModel):
     mode: str
     base_url: str
     spec_url: str | None = None
-    transport: str
     # Which upstream this device is, so the fields below read correctly: a proxied MCP
     # server has no spec_url or spec_hash, and a missing one is normal rather than a fault.
     upstream_kind: str = "openapi"

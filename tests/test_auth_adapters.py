@@ -150,7 +150,7 @@ def _get_pod(auth):
             )
         ],
     )
-    return DevicePod(hostname="dev", manifest=manifest, transport="sse", base_url="http://dev.local", auth=auth)
+    return DevicePod(hostname="dev", manifest=manifest, base_url="http://dev.local", auth=auth)
 
 
 @pytest.mark.asyncio

@@ -2,33 +2,31 @@
 # Copyright (c) 2026 Ben Wold. All rights reserved.
 # Licensed under the PolyForm Noncommercial License 1.0.0. See LICENSE in the project root for details.
 """
-SSE session registry and result routing via a durable per-session Redis Stream.
+Handshake-era session registry and result routing over Redis Streams.
 
-In distributed mode every gateway instance is stateless with respect to
-SSE clients.  When a client opens a stream on Gateway A and a tool call
-arrives at Gateway B, the result still reaches the client because:
+Distributed mode only. A Streamable HTTP POST can land on any gateway replica while the
+device's pod runs on one worker, so the replica handling the request waits on a stream the
+worker publishes to:
 
-  Worker → XADD session:{id}:results <json-rpc-response>
-         → Redis Stream (durable, buffered)
-         → Gateway A (XREAD BLOCK on session:{id}:results) → SSE event
+  Worker → XADD session:{id}:results <json-rpc-response>   (a handshake-era session)
+  Worker → XADD reply:{request_id} <json-rpc-response>    (a stateless call, ADR-0027 §1)
+         → the waiting replica (XREAD BLOCK) → the POST's response body
 
-A Stream rather than pub/sub (SRE #3): pub/sub is fire-and-forget, so a result
-published while the single subscribing gateway was mid-restart, briefly
-disconnected, or between reads was lost — and because the worker had already
-marked the call handled, the F6 timeout watcher stood down too, leaving the
-client to hang. A Stream buffers undelivered entries and lets the reader start
-from id "0", so results that arrive between register() and subscribe() are not
-missed. The stream is bounded (MAXLEN) and carries the session TTL so abandoned
-sessions can't leak.
+A Stream rather than pub/sub (SRE #3): pub/sub is fire-and-forget, so a result published
+before the waiter is reading would be lost. A Stream buffers it, and a waiter reads from a
+cursor taken before publishing (a session's stream) or from the start (a reply stream, which
+nothing else writes to). Session keys carry a TTL so abandoned sessions expire; reply streams
+carry a short one and are deleted once read.
 
-Session keys carry a TTL so abandoned sessions expire automatically.
+Until 0.4.0 this also fed the HTTP+SSE transport's long-lived result streams; that went with
+the transport.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from loguru import logger
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -36,7 +34,6 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from device_mcp_gateway.shared.keys import KEYS
 
 SESSION_TTL = 86_400  # 24 h — refreshed periodically while the stream is active
-_REFRESH_THROTTLE = 60.0  # min seconds between TTL refreshes on a busy stream
 # Cap a session's buffered results so a client that stops reading can't grow the
 # stream without bound. Approximate trimming keeps XADD O(1).
 _RESULTS_MAXLEN = 1000
@@ -88,10 +85,6 @@ def _results_key(session_id: str) -> str:
     return KEYS.session_results(session_id)
 
 
-def _fleet_tools_key(session_id: str) -> str:
-    return KEYS.fleet_tools(session_id)
-
-
 def _field(fields: dict, name: str) -> str | None:
     """Read one field out of a stream entry.
 
@@ -100,25 +93,6 @@ def _field(fields: dict, name: str) -> str | None:
     to accommodate the older fake.
     """
     return fields.get(name)
-
-
-class _RefreshThrottle:
-    """Permits an action at most once per `window` seconds (monotonic clock).
-
-    Used to cap session-TTL refreshes: a busy SSE stream would otherwise issue
-    one Redis EXPIRE per message. One refresh per minute keeps a 24 h TTL alive
-    with negligible Redis traffic.
-    """
-
-    def __init__(self, window: float) -> None:
-        self._window = window
-        self._last = 0.0  # 0 → first call always fires
-
-    def ready(self, now: float) -> bool:
-        if now - self._last >= self._window:
-            self._last = now
-            return True
-        return False
 
 
 class SessionRouter:
@@ -172,96 +146,19 @@ class SessionRouter:
         return dict(h)
 
     async def refresh(self, session_id: str, ttl: int = SESSION_TTL) -> None:
-        # Keep the session hash, its results stream, and (for a fleet session) its
-        # tools lookup table on the same TTL so none outlives the others. EXPIRE
-        # on a key that doesn't exist (e.g. fleet_tools for a per-device session)
-        # is a harmless no-op.
+        # Keep the session hash and its results stream on the same TTL so neither
+        # outlives the other.
         pipe = self._r.pipeline()
         pipe.expire(KEYS.session(session_id), ttl)
         pipe.expire(_results_key(session_id), ttl)
-        pipe.expire(_fleet_tools_key(session_id), ttl)
         await pipe.execute()
 
     async def delete(self, session_id: str) -> None:
         pipe = self._r.pipeline()
         pipe.delete(KEYS.session(session_id))
         pipe.delete(_results_key(session_id))
-        pipe.delete(_fleet_tools_key(session_id))
         await pipe.execute()
         logger.debug(f"Session deleted: session_id={session_id}")
-
-    async def set_fleet_tools(self, session_id: str, tools: dict[str, dict], ttl: int = SESSION_TTL) -> None:
-        """Persist a fleet session's display-name -> tool-entry lookup table.
-
-        Each entry carries ``hostname``/``real_name`` (for ``tools/call`` dispatch)
-        plus ``description``/``schema`` (so ``tools/list`` can be re-served by
-        whichever gateway replica receives it, without re-querying every device).
-        A POST may land on a different replica than the GET that opened the
-        session, so this must be in Redis rather than in-process memory.
-        """
-        if not tools:
-            return
-        key = _fleet_tools_key(session_id)
-        mapping = {name: json.dumps(entry) for name, entry in tools.items()}
-        pipe = self._r.pipeline()
-        pipe.hset(key, mapping=mapping)
-        pipe.expire(key, ttl)
-        await pipe.execute()
-
-    async def get_fleet_tools(self, session_id: str) -> dict[str, dict] | None:
-        h = await self._r.hgetall(_fleet_tools_key(session_id))
-        if not h:
-            return None
-        return {k: json.loads(v) for k, v in h.items()}
-
-    async def subscribe(self, session_id: str) -> AsyncGenerator[dict, None]:
-        """Yield JSON-RPC response dicts from this session's durable results stream.
-
-        Reads via XREAD BLOCK on a dedicated connection (so the command client
-        stays free) starting from id "0", so results buffered between register()
-        and this call are not missed. Exits when the generator is cancelled
-        (client disconnect).
-        """
-        key = _results_key(session_id)
-        last_id = "0"  # read from the start so nothing buffered pre-subscribe is lost
-        throttle = _RefreshThrottle(_REFRESH_THROTTLE)
-        logger.debug(f"Reading results stream {key}")
-        try:
-            block_ms = _safe_block_ms(self._ps)
-            while True:
-                try:
-                    resp = await self._ps.xread({key: last_id}, count=10, block=block_ms)
-                except RedisTimeoutError:
-                    # An idle window that outran the socket deadline. Nothing is wrong with
-                    # the session, so treat it as "no new entries" — raising here would tear
-                    # down a stream the client still holds open, which looks to them like a
-                    # random disconnect. _safe_block_ms should prevent it; this keeps a
-                    # misconfigured or unusually slow link from killing the stream anyway.
-                    resp = None
-                # Throttle TTL refreshes so a busy stream doesn't issue one EXPIRE
-                # per message (RC-3). This runs BEFORE the empty-response check: the
-                # session's lease should track how long the client has held the stream
-                # open, not how much traffic crossed it. With the check after, an idle
-                # session never renewed and its key expired at SESSION_TTL under a
-                # stream the client still had open — the next POST then got a 404 for a
-                # session that was, from the client's side, plainly alive.
-                if throttle.ready(time.monotonic()):
-                    await self.refresh(session_id)
-                if not resp:
-                    continue  # block elapsed with no new entries — loop (allows cancellation)
-                for _stream, entries in resp:
-                    for msg_id, fields in entries:
-                        last_id = msg_id.decode() if isinstance(msg_id, bytes) else msg_id
-                        raw = _field(fields, "data")
-                        if raw is None:
-                            logger.warning(f"Results entry on {key} missing 'data' field: {fields!r}")
-                            continue
-                        try:
-                            yield json.loads(raw)
-                        except json.JSONDecodeError:
-                            logger.warning(f"Non-JSON entry on {key}: {raw!r}")
-        finally:
-            logger.debug(f"Stopped reading results stream {key}")
 
     async def results_cursor(self, session_id: str) -> str:
         """The id of the last entry currently on a session's results stream.

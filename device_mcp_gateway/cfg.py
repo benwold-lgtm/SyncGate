@@ -121,6 +121,8 @@ _CONFIG_SCHEMA: dict[str, Any] = {
             "scopes": list,
         },
     },
+    # Ignored since 0.4.0 (roadmap decision 6); still accepted so an old config validates, and
+    # warned about at startup by warn_removed_settings.
     "transport": {"default": str, "sse": {"keep_alive_interval": _NUM}},
     "discovery": {"spec_paths": list, "timeout": _NUM},
     "storage": {"type": str, "db_path": str},
@@ -342,6 +344,26 @@ def validate_config(cfg: dict[str, Any], *, source: str = "config") -> list[str]
     return problems
 
 
+def warn_removed_settings(cfg: dict[str, Any]) -> list[str]:
+    """Name config keys that no longer do anything, so stale config is visible, not silent.
+
+    A warning rather than a refusal to start (roadmap decision 6): configuration that selects
+    nothing is not worth an outage. Returns the warnings for testing.
+    """
+    warnings: list[str] = []
+    transport = cfg.get("transport")
+    if isinstance(transport, dict):
+        keys = [f"transport.{k}" for k in sorted(transport)]
+        if keys:
+            warnings.append(
+                f"{', '.join(keys)} {'is' if len(keys) == 1 else 'are'} ignored: HTTP+SSE was removed in 0.4.0 "
+                "and every device is served on /v1/devices/{hostname}/mcp. Remove the transport block."
+            )
+    for w in warnings:
+        logger.warning(f"Removed configuration: {w}")
+    return warnings
+
+
 def warn_unsafe_settings(cfg: dict[str, Any], mode: str, auth_enabled: bool) -> list[str]:
     """Warn loudly when the *forgotten/default* posture is permissive (F-53).
 
@@ -524,7 +546,6 @@ def _defaults() -> dict:
             "pubsub_max_connections": 1000,
         },
         "auth": {"type": "api_key"},
-        "transport": {"default": "sse"},
         "storage": {"db_path": "./data/devices.db"},
         "cors": {"allowed_origins": []},
         "backup": {
