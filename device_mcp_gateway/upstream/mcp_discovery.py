@@ -207,6 +207,9 @@ async def snapshot_upstream(upstream: StreamableHttpClient) -> dict[str, Any]:
     tools = await upstream.list_tools()  # handshakes first, which records the capabilities
     caps = upstream.server_capabilities
     snapshot: dict[str, Any] = {"upstream_kind": "mcp", "tools": tools, "resources": [], "prompts": []}
+    # Which era the upstream answered in. Not part of the change-detection hash (only the
+    # contract is); it decides which tools a modern upstream can actually be called with.
+    snapshot["era"] = upstream.era
     discovered = {"resources": True, "prompts": True}
     for kind, lister in (("resources", upstream.list_resources), ("prompts", upstream.list_prompts)):
         if kind not in caps:
@@ -232,6 +235,7 @@ def build_proxy_manifest_from(
         # A snapshot from before ADR-0028 has no "discovered": nothing was looked for.
         discovered=spec.get("discovered") or {"resources": False, "prompts": False},
         max_tools=max_tools,
+        drop_header_annotated=spec.get("era") == "modern",
     )
 
 
@@ -244,8 +248,14 @@ def build_proxy_manifest(
     discovered: dict[str, bool] | None = None,
     server_version: str = "1.0.0",
     max_tools: int = DEFAULT_MAX_OPERATIONS,
+    drop_header_annotated: bool = False,
 ) -> McpManifest:
     """Turn a ``tools/list`` response into a manifest of proxied tools.
+
+    ``drop_header_annotated`` (a stateless-era upstream): a tool whose schema carries an
+    ``x-mcp-header`` annotation is left out. Such an upstream rejects a call to it that lacks
+    the matching ``Mcp-Param-*`` header (``-32020``), and the proxy path sends none, by design
+    (ADR-0010). Listing the tool would offer the model something that fails every time.
 
     Applies, in order: the count cap (F-09), name sanitisation and collision-safe deduping
     (F-04), and text sanitisation of every LLM-facing string (F-26). The upstream's own
@@ -276,7 +286,15 @@ def build_proxy_manifest(
             # Handed to jsonschema for F-28 validation and to the LLM as the contract.
             # A non-object schema must become an empty object, not be trusted through.
             schema = {"type": "object"}
-        schema = strip_header_annotations(schema)
+        stripped = strip_header_annotations(schema)
+        if drop_header_annotated and stripped != schema:
+            logger.warning(
+                f"Not offering {hostname} tool {wire_name!r}: its upstream requires Mcp-Param-* headers "
+                "for it, which the proxy path never sends (ADR-0010)"
+            )
+            used.discard(name)
+            continue
+        schema = stripped
 
         raw_annotations = entry.get("annotations")
         annotations: dict[str, Any] = raw_annotations if isinstance(raw_annotations, dict) else {}

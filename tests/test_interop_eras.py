@@ -41,14 +41,16 @@ from mcp.server.mcpserver import MCPServer  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 
 from device_mcp_gateway.core.protocol import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS  # noqa: E402
-from device_mcp_gateway.upstream.mcp_client import McpUpstreamError, StreamableHttpClient  # noqa: E402
+from device_mcp_gateway.upstream.mcp_client import (  # noqa: E402
+    ERA_HANDSHAKE,
+    ERA_MODERN,
+    McpUpstreamError,
+    StreamableHttpClient,
+    known_era,
+)
 
 MODERN = MODERN_PROTOCOL_VERSIONS[0]
 HOST = "interop-sensor.local"
-
-NOT_YET_OUTBOUND = pytest.mark.xfail(
-    strict=True, reason="the gateway detects an upstream's era from 0.4.0 Workstream B PR 7"
-)
 
 
 @pytest.fixture
@@ -267,7 +269,6 @@ async def test_the_gateway_reaches_a_handshake_only_upstream():
 
 
 @pytest.mark.anyio
-@NOT_YET_OUTBOUND
 async def test_the_gateway_reaches_a_modern_only_upstream():
     async with _Upstream("modern") as up:
         names, result = await _list_and_call(up)
@@ -275,16 +276,138 @@ async def test_the_gateway_reaches_a_modern_only_upstream():
 
 
 @pytest.mark.anyio
-async def test_a_modern_only_upstream_fails_cleanly_until_then():
-    """Fails with a protocol error naming the cause, not a hang or a generic 500."""
+async def test_a_dual_era_upstream_is_spoken_to_in_the_stateless_era():
+    async with _Upstream(None) as up:
+        info = await up.client().initialize()
+        assert info["protocolVersion"] == MODERN and info["serverInfo"]["name"] == "reference-upstream-sdk2"
+        assert known_era("http://up/mcp") == ERA_MODERN
+
+
+@pytest.mark.anyio
+async def test_a_handshake_only_upstream_is_learned_once():
+    """Era is a property of the server: the second client asks nobody (roadmap trap 3)."""
+    async with _Upstream("handshake") as up:
+        seen: list[str] = []
+        real = up.http.post
+
+        async def spy(url, *, json=None, **kw):
+            seen.append(json["method"])
+            return await real(url, json=json, **kw)
+
+        up.http.post = spy  # type: ignore[method-assign]
+        await up.client().list_tools()
+        assert known_era("http://up/mcp") == ERA_HANDSHAKE
+        seen.clear()
+        await up.client().list_tools()
+        assert "server/discover" not in seen  # remembered, not re-probed
+
+
+@pytest.mark.anyio
+async def test_an_upstream_that_upgrades_mid_flight_is_relearned():
+    """Cached as handshake; the server drops the handshake; the next client finds out once."""
+    async with _Upstream("handshake") as up:
+        await up.client().list_tools()
+        assert known_era("http://up/mcp") == ERA_HANDSHAKE
+        up.app.era = "modern"  # the same server, now refusing initialize with -32022
+        names, result = await _list_and_call(up)
+        assert names == ["add"] and "42" in json.dumps(result)
+        assert known_era("http://up/mcp") == ERA_MODERN
+
+
+@pytest.mark.anyio
+async def test_an_upstream_that_downgrades_mid_flight_is_relearned_and_the_call_runs_once():
     async with _Upstream("modern") as up:
-        try:
-            await up.client().list_tools()
-        except McpUpstreamError as exc:
-            # The upstream's own reason, not just "HTTP 400": an operator has to be able to act.
-            assert "-32022: Unsupported protocol version" in str(exc), str(exc)
-            return
-    pytest.xfail("reached: PR 7 has landed, delete this test")
+        client = up.client()
+        await client.list_tools()
+        assert known_era("http://up/mcp") == ERA_MODERN
+        up.app.era = "handshake"  # now refuses the stateless envelope: 400, before doing anything
+        resp = await client.call_tool("add", {"a": 1, "b": 2})
+        assert resp.status_code == 200 and "3" in json.dumps(resp.message)
+        assert known_era("http://up/mcp") == ERA_HANDSHAKE
+
+
+@pytest.mark.anyio
+async def test_a_disjoint_modern_only_upstream_fails_with_a_named_reason():
+    """The one refusal that does not fall back: -32022 naming only modern versions we lack."""
+
+    async def handler(request):
+        body = json.loads(request.content)
+        return httpx.Response(
+            400,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "error": {
+                    "code": -32022,
+                    "message": "Unsupported protocol version",
+                    "data": {"supported": ["2099-01-01"], "requested": MODERN},
+                },
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://up")
+    with pytest.raises(McpUpstreamError, match="2099-01-01"):
+        await StreamableHttpClient(url="http://up/mcp", get_client=lambda: http).initialize()
+    assert known_era("http://up/mcp") is None
+
+
+@pytest.mark.anyio
+async def test_an_outage_during_the_probe_is_not_an_era_verdict():
+    async def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://up")
+    with pytest.raises(McpUpstreamError):
+        await StreamableHttpClient(url="http://up/mcp", get_client=lambda: http).initialize()
+    assert known_era("http://up/mcp") is None
+
+
+@pytest.mark.anyio
+async def test_a_modern_upstreams_results_reach_pods_era_neutral():
+    """resultType, cache hints and the upstream's serverInfo are about the upstream-to-gateway
+    hop; the edge stamps the gateway's own for a modern client."""
+    async with _Upstream(None) as up:
+        c = up.client()
+        tools = await c.list_tools()
+        resp = await c.call_tool("add", {"a": 1, "b": 1})
+    assert tools and "ttlMs" not in json.dumps(resp.message)
+    result = resp.message["result"]
+    assert "resultType" not in result and "cacheScope" not in result
+    assert "io.modelcontextprotocol/serverInfo" not in json.dumps(result)
+
+
+@pytest.mark.anyio
+async def test_the_stateless_routing_headers_are_sent_and_no_argument_ever_is():
+    seen: list[dict] = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        seen.append({k.lower(): v for k, v in request.headers.items()})
+        if body["method"] == "server/discover":
+            result = {"supportedVersions": [MODERN], "capabilities": {"tools": {}}}
+        else:
+            result = {"content": [{"type": "text", "text": "ok"}]}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://up")
+    c = StreamableHttpClient(url="http://up/mcp", get_client=lambda: http)
+    await c.call_tool("Ünïcode tool", {"region": "eu-west", "secret": "do-not-header-me"})
+    call = seen[-1]
+    assert call["mcp-protocol-version"] == MODERN and call["mcp-method"] == "tools/call"
+    assert call["mcp-name"].startswith("=?base64?")  # non-ASCII, wrapped as the SDK does
+    assert not any(k.startswith("mcp-param-") for k in call)
+    assert "do-not-header-me" not in json.dumps(call) and "mcp-session-id" not in call
+
+
+def test_the_reply_is_picked_out_of_an_sse_stream_with_notifications_first():
+    from device_mcp_gateway.upstream.mcp_client import _sse_reply
+
+    stream = (
+        ": ping\r\n\r\n"
+        'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\n\n'
+        'event: message\ndata: {"jsonrpc":"2.0","id":7,"result":{"ok":true}}\n\n'
+    )
+    assert json.loads(_sse_reply(stream, 7)) == {"jsonrpc": "2.0", "id": 7, "result": {"ok": True}}
 
 
 # --- the error report a refusal produces ------------------------------------------------------

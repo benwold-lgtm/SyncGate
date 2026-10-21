@@ -242,9 +242,11 @@ async def test_the_session_id_is_captured_and_replayed():
     up = _stub_upstream(handler)
     await up.initialize()
     await up.request("tools/list")
+    # The era probe (server/discover, which this stub does not answer as modern), then
     # initialize, then the `initialized` notification, then the request — everything after
-    # the handshake carries the session the upstream issued.
-    assert seen == [None, "sess-123", "sess-123"]
+    # the handshake carries the session the upstream issued, and nothing before it does: a
+    # session header seen on the stateless probe is not adopted.
+    assert seen == [None, None, "sess-123", "sess-123"]
 
 
 async def test_a_transport_failure_raises_rather_than_returning_a_result():
@@ -321,7 +323,9 @@ async def test_a_stateful_upstream_is_handshaken_before_the_first_tool_call():
     resp = await pod.call_tool(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {}}}
     )
-    assert [m for m, _ in log] == ["initialize", "notifications/initialized", "tools/call"]
+    # The era probe first: this upstream does not answer server/discover as a modern server,
+    # so the client falls back to the handshake, once, and remembers that.
+    assert [m for m, _ in log] == ["server/discover", "initialize", "notifications/initialized", "tools/call"]
     assert log[-1][1] == "sess-1", "the issued session was not replayed on the tool call"
     assert resp["result"]["content"][0]["text"] == "ok"
 
@@ -390,7 +394,8 @@ async def test_a_400_is_not_retried_because_it_is_ambiguous_about_whether_the_up
             return httpx.Response(200, json=_rpc_result({}, req_id=body["id"]), headers={"Mcp-Session-Id": "sess-1"})
         if body["method"].startswith("notifications/"):
             return httpx.Response(202, text="")
-        attempts.append(body["method"])
+        if body["method"] != "server/discover":  # the era probe is not an attempt at the call
+            attempts.append(body["method"])
         return httpx.Response(400, text="Bad Request")
 
     pod = _pod(handler)
@@ -463,7 +468,7 @@ async def test_discovery_handshakes_before_listing_tools():
         # The stateful stub answers tools/list with content, not a tool list — what matters
         # here is the order of what reached the wire.
         await _list()
-    assert log[0][0] == "initialize"
+    assert [m for m, _ in log][:2] == ["server/discover", "initialize"]
 
 
 # --- F-25 / ADR-0010: outbound headers come only from auth + protocol ---------

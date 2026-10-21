@@ -92,3 +92,25 @@ the mechanism this ADR refuses.
   is accepted, its tool is callable, and the header does not appear on the wire.
 - Documentation must state the divergence where a user meets it — the passthrough section of
   the README and the tool-contract description in `tooling.md`.
+
+## Implementation note (2026-10-21, 0.4.0): the proxy path in the stateless era
+
+`2026-07-28` makes `x-mcp-header` a two-way contract: a client mirrors an annotated argument into
+an `Mcp-Param-*` header, and a server **rejects** a call whose header is missing or disagrees
+(`-32020`). This record keeps the proxy path without a header channel, so in 0.4.0:
+
+- **Inbound**, a proxied tool's schema is advertised with its `x-mcp-header` annotations
+  stripped, so a conforming client sends no `Mcp-Param-*` headers to the gateway for it.
+- **Outbound**, a tool on a stateless-era upstream whose schema is annotated is **not offered**
+  at all, and discovery logs a warning naming it. That upstream would refuse every call the
+  gateway can make to it, and offering the model a tool that always fails is worse than
+  leaving it out. On a handshake-era upstream the annotation means nothing, so the tool is
+  kept, with the annotation stripped.
+- The `Mcp-Name` and `Mcp-Method` headers the gateway *does* send are routing headers, not
+  this channel: they repeat the method and the tool, prompt or URI already in the body, never
+  an argument. `test_the_stateless_routing_headers_are_sent_and_no_argument_ever_is` pins that.
+
+Superseding this record to forward `Mcp-Param-*` headers is now concretely what it would take
+to use such a tool through the proxy. The case is narrower than the one this record weighed:
+the header name is always prefixed `Mcp-Param-`, so it cannot collide with `Authorization` or a
+custom credential header.

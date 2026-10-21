@@ -73,6 +73,27 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   - A backup archive does not carry them yet, and a restore says so in its new `not_carried`
     list.
 
+- **The gateway speaks the stateless era to upstreams that have it** (Workstream B PR 7). A
+  proxied MCP server's era is detected, not assumed. The client probes `server/discover` at
+  `2026-07-28` and falls back to the `initialize` handshake on anything that is not positive
+  evidence the server is modern, which is the official SDK client's rule.
+  - **Remembered per upstream URL** for the life of the process, because era is a property of
+    the server. It is re-learned once when the assumption fails: an upstream that drops the
+    handshake (`-32022` on `initialize`), or one that refuses the stateless envelope before
+    doing any work. In the second case the refused call is re-sent once, which cannot run it
+    twice.
+  - **Failures:** a network failure during the probe is never recorded as a verdict. An
+    upstream that serves only modern versions this gateway does not speak fails with an error
+    naming them.
+  - **Era-neutral results:** a modern upstream's `resultType`, cache hints and `serverInfo`
+    stamp are taken off its results, so the gateway's own edge shapes them for whichever era
+    the gateway's client speaks. The upstream's identity is never presented as the gateway's.
+  - **Headers:** stateless requests carry `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name`
+    (base64-wrapped when not plain ASCII), and never an `Mcp-Param-*` header (ADR-0010).
+  - **Header-bound tools are not offered:** a tool on a modern upstream whose schema carries
+    `x-mcp-header` is left out with a warning, because that upstream would reject every call
+    the proxy path can make to it. See the ADR-0010 implementation note.
+
 ### Deprecated
 
 - **`/v1/fleet/mcp?devices=`** keeps serving the handshake era through 0.4.x, with
@@ -95,6 +116,13 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ### Fixed
 
+- **An SSE-framed reply preceded by notifications was misread.** The upstream client took the
+  first SSE event as the reply. A server may send progress or logging notifications on the same
+  stream first, and the stateless era makes that routine. It now takes the event whose JSON-RPC
+  `id` matches the request.
+- **A session header on a non-handshake response was adopted.** It is now taken only in the
+  handshake era, so a session offered on the era probe is never replayed on the `initialize`
+  that follows.
 - **An upstream's refusal now says why.** A 4xx from an upstream MCP server was reported as
   `initialize to … returned HTTP 400`, dropping the JSON-RPC error that names the cause. It now
   reads, for example, `… returned HTTP 400 (-32022: Unsupported protocol version)`. The text is
