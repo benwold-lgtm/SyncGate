@@ -853,7 +853,7 @@ The bundled manifests assume the following are already installed in the target c
 multi-arch (amd64/arm64) GHCR image *by digest*:
 
 ```
-ghcr.io/benwold-lgtm/device-mcp-gateway:0.3.9@sha256:dd191bf3c0f5e896ab8a9c244894edca7bb5fa08853bffa54d937d657c7a0b4a
+ghcr.io/benwold-lgtm/device-mcp-gateway:0.4.0@sha256:8ebfc2d24a388cbebf9f7b8fa45c432fd558291e68cc4334ae931ffe1fbf4b80
 ```
 
 The digest — not the tag — is what Kubernetes resolves, so every replica on every node
@@ -865,15 +865,15 @@ they share the Redis data model, so a version skew across a schema change is a s
 risk). Read the digest for a tag with:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/benwold-lgtm/device-mcp-gateway:0.3.9
+docker buildx imagetools inspect ghcr.io/benwold-lgtm/device-mcp-gateway:0.4.0
 ```
 
 Prefer to build from source? The repo root holds the Dockerfile — build, push to a
 registry your cluster can pull from, and retarget via the same `images:` block:
 
 ```bash
-docker build -t <your-registry>/device-mcp-gateway:0.3.9 .
-docker push <your-registry>/device-mcp-gateway:0.3.9
+docker build -t <your-registry>/device-mcp-gateway:0.4.0 .
+docker push <your-registry>/device-mcp-gateway:0.4.0
 ```
 
 > **kind / minikube shortcut.** To skip a registry entirely, build locally and load the
