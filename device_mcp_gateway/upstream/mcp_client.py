@@ -68,6 +68,10 @@ class McpResponse:
 
     status_code: int
     message: dict[str, Any] | None
+    #: On a 4xx, the upstream's own JSON-RPC error as one bounded line (``-32022: Unsupported
+    #: protocol version``), or None. ``message`` stays None for a 4xx so no caller changes
+    #: behaviour; this exists only so an error *report* can say why, instead of just "400".
+    error_detail: str | None = None
 
 
 class StreamableHttpClient:
@@ -225,7 +229,8 @@ class StreamableHttpClient:
         """
         resp = await self.send(self._envelope(method, params))
         if resp.status_code >= 400:
-            raise McpUpstreamError(f"{method} to {redact_url(self._url)} returned HTTP {resp.status_code}")
+            why = f" ({resp.error_detail})" if resp.error_detail else ""
+            raise McpUpstreamError(f"{method} to {redact_url(self._url)} returned HTTP {resp.status_code}{why}")
         if resp.message is None:
             raise McpUpstreamError(f"{method} to {redact_url(self._url)} returned no JSON-RPC message")
         if "error" in resp.message:
@@ -260,7 +265,7 @@ class StreamableHttpClient:
         if 500 <= resp.status_code < 600:
             raise McpUpstreamError(f"upstream {redact_url(self._url)} returned HTTP {resp.status_code}")
         if resp.status_code >= 400:
-            return McpResponse(status_code=resp.status_code, message=None)
+            return McpResponse(status_code=resp.status_code, message=None, error_detail=_error_detail(resp))
 
         return McpResponse(status_code=resp.status_code, message=self._decode(resp))
 
@@ -313,6 +318,32 @@ class StreamableHttpClient:
         if params is not None:
             env["params"] = params
         return env
+
+
+#: How much of an upstream's error text an operator-facing message may carry.
+_ERROR_DETAIL_MAX = 200
+
+
+def _error_detail(resp: httpx.Response) -> str | None:
+    """The JSON-RPC error in a 4xx body, as ``code: message`` on one bounded line, or None.
+
+    Best effort and never raising: a 4xx body is the upstream's, so it may be anything. The
+    text is untrusted and goes only into an error *report* — collapsed to one line and cut to
+    ``_ERROR_DETAIL_MAX`` characters, so it cannot forge log lines or flood them.
+    """
+    if len(resp.content) > 64 * 1024:
+        return None
+    try:
+        body = json.loads(resp.content.decode("utf-8", errors="replace"))
+    except ValueError:
+        return None
+    err = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(err, dict):
+        return None
+    code, text = err.get("code"), err.get("message")
+    detail = f"{code}: {text}" if code is not None else str(text or "")
+    detail = " ".join(detail.split())
+    return detail[:_ERROR_DETAIL_MAX] or None
 
 
 def _first_sse_data(text: str) -> str | None:
