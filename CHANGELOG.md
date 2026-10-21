@@ -140,6 +140,17 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ### Fixed
 
+- **A burst to one device could exhaust a worker's Redis pool and dead-letter calls.** A
+  worker allows `max_concurrent_calls_per_device` (20) in flight, the same as the default Redis
+  pool (`redis.max_connections`, 20), and its consume loop, heartbeat and health loop need
+  connections too. The default pool raised `MaxConnectionsError` instead of waiting, so the
+  calls that lost the race failed and were dead-lettered. Found by the 0.4.0 live run: 40
+  concurrent stateless calls to one proxied device. Every Redis client now uses a blocking
+  pool, which waits up to `redis.pool_timeout` (default 10 s, well inside the 30 s exchange
+  deadline) for a connection. This predates 0.4.0; stateless clients, being naturally
+  concurrent, made it easy to hit.
+- **The shipped `config.yaml` and Kubernetes ConfigMap no longer carry a `transport:` block**,
+  so a stock install does not warn its operator to remove something the project shipped.
 - **An SSE-framed reply preceded by notifications was misread.** The upstream client took the
   first SSE event as the reply. A server may send progress or logging notifications on the same
   stream first, and the stateless era makes that routine. It now takes the event whose JSON-RPC

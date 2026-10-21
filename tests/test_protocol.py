@@ -185,3 +185,18 @@ def test_the_stamp_fills_gaps_and_never_overwrites():
     shaped = protocol.modern_response("tools/call", upstream, server_name="s", server_version="1")["result"]
     assert shaped["resultType"] == "input_required" and shaped["_meta"]["k"] == "v"
     assert shaped["_meta"][protocol.SERVER_INFO_META_KEY] == {"name": "s", "version": "1"}
+
+
+def test_the_shipped_config_does_not_trip_the_removed_settings_warning():
+    """A stock install must not tell its operator to remove something we shipped."""
+    from pathlib import Path
+
+    import yaml
+
+    from device_mcp_gateway.cfg import warn_removed_settings
+
+    root = Path(__file__).resolve().parents[1]
+    assert warn_removed_settings(yaml.safe_load((root / "config.yaml").read_text())) == []
+    configmap = yaml.safe_load((root / "deploy" / "kubernetes" / "configmap.yaml").read_text())
+    embedded = next(v for v in configmap["data"].values() if "registry" in v)
+    assert warn_removed_settings(yaml.safe_load(embedded)) == []

@@ -97,11 +97,6 @@ data:
           - "read"
           - "write"
 
-    transport:
-      default: "sse"
-      sse:
-        keep_alive_interval: 15
-
     discovery:
       spec_paths:
         - "/openapi.json"
