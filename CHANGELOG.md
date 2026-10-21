@@ -10,6 +10,14 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-21
+
+MCP 2.0: the stateless `2026-07-28` era on every device and fleet endpoint, alongside the
+handshake era. **Breaking**, per this project's `0.x` policy: the SSE transport is removed and a
+`transport` key is refused. Upgrade the console to
+[SyncGate-UI v0.3.1](https://github.com/benwold-lgtm/SyncGate-UI/releases/tag/v0.3.1) first,
+then roll the gateway workers first, as usual.
+
 ### Read this before upgrading
 
 - **HTTP+SSE is removed** (roadmap decision 2): `GET /v1/devices/{hostname}/sse`,
@@ -28,8 +36,9 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
     `dropped_fields: ["transport"]`, in the preview as well as the run.
   - **Config:** `transport.default` and `transport.sse.*` are ignored, with a startup warning
     naming them.
-  - **The console:** SyncGate-UI stopped sending the field in its #78, so it works against both
-    0.3.x and 0.4.0.
+  - **The console:** SyncGate-UI stopped sending the field in its #78, released as console
+    **v0.3.1**, which works against both 0.3.x and 0.4.0. An older console's device edits and
+    catalog claims get the 400, so upgrade it first.
 - **Two metrics are removed:** `mcp_active_sse_connections` and
   `mcp_sse_messages_dropped_total`. Both measured the SSE transport. Drop them from dashboards
   and alert rules.
@@ -2287,6 +2296,7 @@ This release is the output of a comprehensive security, reliability, and operabi
 - **Pull-only**: OpenAPI `webhooks` / `callbacks` are not translated, and there is no
   long-running-operation (202 / job-poll) support — calls are synchronous.
 
+[0.4.0]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.4.0
 [0.3.9]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.9
 [0.3.8]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.8
 [0.3.7]: https://github.com/benwold-lgtm/SyncGate/releases/tag/v0.3.7
