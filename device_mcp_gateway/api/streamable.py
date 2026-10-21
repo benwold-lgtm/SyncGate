@@ -250,9 +250,19 @@ def _modern_json(body: dict[str, Any]) -> Response:
     return Response(content=json.dumps(body), media_type="application/json", status_code=protocol.http_status_for(body))
 
 
-def _server_identity(request: Request, hostname: str) -> tuple[str, str]:
-    """The name and version this device's MCP server presents — what ``initialize`` would say."""
-    profile = request.app.state.registry.get_profile(hostname)
+async def _server_identity(request: Request, hostname: str) -> tuple[str, str]:
+    """The name and version this device's MCP server presents — what ``initialize`` would say.
+
+    Embedded mode has the pod here. In distributed mode the pod is on a worker, so it is the
+    cached manifest the worker wrote, which is the same object the pod was built from.
+    """
+    reg = request.app.state.registry
+    if request.app.state.mode == "distributed":
+        cached = await reg._backend.get_manifest(hostname)
+        if isinstance(cached, dict) and cached.get("server_name"):
+            return str(cached["server_name"]), str(cached.get("server_version") or "unknown")
+        return f"mcp-{hostname}", "unknown"
+    profile = reg.get_profile(hostname)
     manifest = profile.pod.manifest if profile and profile.pod else None
     if manifest is None:
         return f"mcp-{hostname}", "unknown"
@@ -277,12 +287,6 @@ async def _serve_modern(request: Request, hostname: str, payload: dict[str, Any]
             return _modern_json(protocol.unsupported_version(None, version, protocol.MODERN_PROTOCOL_VERSIONS))
         return Response(status_code=202)
 
-    if request.app.state.mode == "distributed":
-        # Distributed mode routes stateless results from 0.4.0 Workstream B PR 5 (ADR-0027 §1).
-        # Until then, -32022 naming the handshake versions is the answer an auto-negotiating
-        # client falls back from cleanly: it reads as "this server speaks the handshake".
-        return _modern_json(protocol.unsupported_version(msg_id, version, protocol.HANDSHAKE_PROTOCOL_VERSIONS))
-
     for header in (protocol.PROTOCOL_VERSION_HEADER, protocol.METHOD_HEADER, protocol.NAME_HEADER):
         if len(request.headers.getlist(header)) > 1:
             # First-copy and last-copy readers would disagree about where this is going.
@@ -297,7 +301,7 @@ async def _serve_modern(request: Request, hostname: str, payload: dict[str, Any]
     if method not in protocol.MODERN_DEVICE_METHODS:
         return _modern_json(protocol.rpc_failure(msg_id, protocol.METHOD_NOT_FOUND, "Method not found", method))
 
-    server_name, server_version = _server_identity(request, hostname)
+    server_name, server_version = await _server_identity(request, hostname)
     if method == "server/discover":
         result: dict[str, Any] | None = {
             "jsonrpc": "2.0",
@@ -312,6 +316,8 @@ async def _serve_modern(request: Request, hostname: str, payload: dict[str, Any]
             result = await _exchange_for(request).exchange(hostname, payload, session_id="", subject=subject, rid=rid)
         except ExchangeUnavailable as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except ExchangeTimeout as exc:
+            raise HTTPException(status_code=504, detail=str(exc) or "Timed out awaiting device response") from exc
         _record_dispatch(hostname, method, result, _t, subject=subject, rid=rid, era="stateless")
     shaped = protocol.modern_response(method, result, server_name=server_name, server_version=server_version)
     if shaped is None:

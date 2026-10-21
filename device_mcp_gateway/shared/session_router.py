@@ -333,6 +333,55 @@ class SessionRouter:
                     # Another in-flight request on this session owns that one; leave it on
                     # the stream for whoever is waiting, and keep reading.
 
+    async def await_reply(self, keys: list[str], *, timeout: float) -> dict | None:
+        """Wait for the single result on a stateless call's reply stream(s), then delete them.
+
+        ``keys`` is the call's own ``reply:{request_id}`` and, for one release, the
+        ``session:req:{request_id}:results`` an older worker publishes to instead (ADR-0027 §1).
+        Both are unique to this call, so each is read from the start and the first entry on
+        either **is** the answer: there is no cursor to take and nothing to correlate, because
+        nothing else writes to them. The client's JSON-RPC id plays no part (§2).
+        """
+        deadline = time.monotonic() + timeout
+        ceiling = _safe_block_ms(self._ps)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                block_ms = max(1, min(int(remaining * 1000), ceiling))
+                try:
+                    resp = await self._ps.xread({k: "0-0" for k in keys}, count=1, block=block_ms)
+                except RedisTimeoutError:
+                    continue
+                for _stream, entries in resp or []:
+                    for _entry_id, fields in entries:
+                        raw = _field(fields, "data")
+                        if raw is None:
+                            continue
+                        try:
+                            message = json.loads(raw)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Non-JSON entry on a reply stream: {raw!r}")
+                            continue
+                        if isinstance(message, dict):
+                            return message
+        finally:
+            # Read once, by one waiter: delete on the way out, answered or not, so a late
+            # result lands in a key that is already gone rather than one left to its TTL.
+            await self._r.delete(*keys)
+
+    async def publish_reply(self, key: str, result: dict, *, ttl: int) -> None:
+        """Publish a stateless call's result to its single-request stream (ADR-0027 §1).
+
+        ``MAXLEN 1``: the stream holds one answer. The TTL bounds a result that arrives after
+        its waiter gave up, so an abandoned key expires instead of accumulating.
+        """
+        pipe = self._r.pipeline()
+        pipe.xadd(key, {"data": json.dumps(result)}, maxlen=1, approximate=False)
+        pipe.expire(key, ttl)
+        await pipe.execute()
+
     async def publish_result(self, session_id: str, result: dict) -> None:
         """Append a JSON-RPC result to the session's durable results stream.
 

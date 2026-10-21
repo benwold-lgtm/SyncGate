@@ -111,6 +111,14 @@ class KeyBuilder:
         """Durable per-session results stream, so a reconnecting client loses nothing."""
         return self._k(f"session:{session_id}:results")
 
+    def reply(self, request_id: str) -> str:
+        """Single-request results stream for a stateless call (ADR-0027 §1).
+
+        One entry, one waiter, a short TTL: nothing else ever writes to it, so a result can
+        never be delivered to a request it does not answer.
+        """
+        return self._k(f"reply:{request_id}")
+
     def fleet_tools(self, session_id: str) -> str:
         """Display-name -> tool entry map for a fleet session."""
         return self._k(f"fleet:{session_id}:tools")

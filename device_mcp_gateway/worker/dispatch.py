@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -38,6 +39,53 @@ from device_mcp_gateway.shared.keys import KEYS
 
 if TYPE_CHECKING:  # pragma: no cover
     from device_mcp_gateway.worker.runner import DeviceWorker
+
+
+#: How long a stateless call's reply stream outlives its result (ADR-0027 §1): the gateway's
+#: exchange deadline plus the result-marker TTL, so a worker answering after the waiter gave up
+#: writes into a key that expires instead of accumulating.
+_EXCHANGE_DEADLINE_S = 30
+
+
+@dataclass(frozen=True)
+class ReplyRoute:
+    """Where one call's result may be published — exactly one stream, or none."""
+
+    #: ``reply`` — a stateless call's own single-request stream; ``session`` — a session's
+    #: results stream, keyed by its id.
+    kind: str
+    key: str
+    session_id: str = ""
+
+
+def resolve_reply_route(fields: dict) -> tuple[ReplyRoute | None, str]:
+    """The one stream this entry's answer may go to, or ``(None, reason)``.
+
+    ADR-0027 §1 and its implementation note. ``reply_to`` wins and is used alone. Without it,
+    an entry from an older gateway still carries the session it is waiting on. With neither
+    there is no route — and the empty session id that would otherwise produce the shared
+    ``session::results`` stream is exactly the cross-caller disclosure §1 exists to prevent.
+
+    A ``reply_to`` is honoured only if it names one of those two kinds of stream: a stream
+    entry is not the place to let anything choose an arbitrary Redis key to write to.
+    """
+    reply_to = fields.get("reply_to") or ""
+    session_id = fields.get("session_id") or ""
+    if reply_to:
+        reply_prefix = KEYS.reply("")
+        if reply_to.startswith(reply_prefix) and len(reply_to) > len(reply_prefix):
+            return ReplyRoute("reply", reply_to), ""
+        # KEYS.session_results(x) is "<prefix>session:" + x + ":results"; recover x and
+        # require it non-empty, so the shared "session::results" can never be named.
+        head, tail = KEYS.session_results("\0").split("\0")
+        if reply_to.startswith(head) and reply_to.endswith(tail):
+            middle = reply_to[len(head) : len(reply_to) - len(tail)]
+            if middle:
+                return ReplyRoute("session", reply_to, middle), ""
+        return None, "invalid reply route"
+    if session_id:
+        return ReplyRoute("session", KEYS.session_results(session_id), session_id), ""
+    return None, "no reply route"
 
 
 def _runner_mod():
@@ -258,6 +306,14 @@ class CallDispatcher:
     # Core dispatch pipeline
     # ------------------------------------------------------------------
 
+    async def publish(self, route: ReplyRoute, result: dict) -> None:
+        """Publish ``result`` to ``route`` — the one stream this call may answer on."""
+        w = self._w
+        if route.kind == "reply":
+            await w._session_router.publish_reply(route.key, result, ttl=_EXCHANGE_DEADLINE_S + w._result_marker_ttl)
+        else:
+            await w._session_router.publish_result(route.session_id, result)
+
     async def dispatch_call(self, hostname: str, stream: str, group: str, msg_id: str, fields: dict) -> None:
         """Bind the gateway's correlation id, then run the pipeline (ADR-0026).
 
@@ -286,9 +342,23 @@ class CallDispatcher:
         # even if json.loads itself raises.
         message: Any = {}
         _method = "?"
+        route, no_route = resolve_reply_route(fields)
         try:
             message = json.loads(fields.get("message", "{}"))
             _method = message.get("method", "?") if isinstance(message, dict) else "?"
+
+            # ADR-0027 §1: an answer with nowhere to go is a gateway bug. Checked before the
+            # call runs, not after — a non-idempotent call must not take effect and then have
+            # its result discarded. A notification expects no answer, so it needs no route.
+            if route is None and isinstance(message, dict) and message.get("id") is not None:
+                logger.error(f"Refusing {_method} for {hostname}: {no_route} (request_id={request_id})")
+                await w._dead_letter(hostname, fields, no_route)
+                if request_id:
+                    await w._r.set(KEYS.result_marker(request_id), "1", ex=w._result_marker_ttl)
+                audit_log(
+                    "tool dispatch", hostname=hostname, subject=subject, method=_method, status="no_route", rid=rid
+                )
+                return
 
             # ADR-0015 §9 backstop. The gateway refuses quarantined calls at admission, but
             # a call already sitting in the stream when the fingerprint change was detected
@@ -310,9 +380,9 @@ class CallDispatcher:
                     logger.warning(f"Refusing {_method} for {hostname}: {fp_reason}")
                     await w._dead_letter(hostname, fields, "fingerprint quarantine")
                     msg_id_val = message.get("id") if isinstance(message, dict) else None
-                    if session_id and msg_id_val is not None:
-                        await w._session_router.publish_result(
-                            session_id,
+                    if route is not None and msg_id_val is not None:
+                        await self.publish(
+                            route,
                             rpc_error(
                                 RPC_NO_WORKER,
                                 msg_id_val,
@@ -341,9 +411,9 @@ class CallDispatcher:
                 logger.warning(f"No pod for {hostname}; dead-lettering call {msg_id}")
                 await w._dead_letter(hostname, fields, "no active pod")
                 msg_id_val = message.get("id") if isinstance(message, dict) else None
-                if session_id and msg_id_val is not None:
-                    await w._session_router.publish_result(
-                        session_id,
+                if route is not None and msg_id_val is not None:
+                    await self.publish(
+                        route,
                         rpc_error(
                             RPC_NO_WORKER,
                             msg_id_val,
@@ -372,9 +442,9 @@ class CallDispatcher:
                         # Refusing a possibly-applied non-idempotent op — tell the
                         # client definitively instead of letting it hang to timeout.
                         msg_id_val = message.get("id") if isinstance(message, dict) else None
-                        if session_id and msg_id_val is not None:
-                            await w._session_router.publish_result(
-                                session_id,
+                        if route is not None and msg_id_val is not None:
+                            await self.publish(
+                                route,
                                 rpc_error(
                                     RPC_DUPLICATE,
                                     msg_id_val,
@@ -420,8 +490,8 @@ class CallDispatcher:
                     _span.set_attribute("mcp.status", _status)
             metrics.tool_calls_total.labels(hostname=hostname, method=_method, status=_status).inc()
             metrics.tool_call_duration_seconds.labels(hostname=hostname).observe(_dur)
-            if result is not None:
-                await w._session_router.publish_result(session_id, result)
+            if result is not None and route is not None:
+                await self.publish(route, result)
             # Mark the call as handled so the gateway's timeout watcher (F6)
             # stands down even when the result reached a different gateway replica.
             if request_id:
@@ -448,9 +518,9 @@ class CallDispatcher:
                 await w._dead_letter(hostname, fields, f"dispatch error: {exc}")
                 metrics.tool_calls_total.labels(hostname=hostname, method=_method, status="dead_letter").inc()
                 msg_id_val = message.get("id") if isinstance(message, dict) else None
-                if session_id and msg_id_val is not None:
-                    await w._session_router.publish_result(
-                        session_id,
+                if route is not None and msg_id_val is not None:
+                    await self.publish(
+                        route,
                         rpc_error(
                             RPC_INTERNAL_ERROR,
                             msg_id_val,

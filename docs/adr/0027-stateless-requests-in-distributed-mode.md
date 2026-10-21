@@ -1,6 +1,6 @@
 # ADR-0027: Stateless requests in distributed mode — results route per request, fleets are handles
 
-- **Status:** Accepted (merged 2026-10-16, #226). Not yet built — Workstream B
+- **Status:** Accepted (merged 2026-10-16, #226). §1–§4 built in 0.4.0 (Workstream B PR 5, see the implementation note); §5 (fleet handles) in PR 6
 - **Date:** 2026-10-16
 - **Related:** [ADR-0002](0002-redis-control-plane.md) (extended), [ADR-0005](0005-at-least-once-with-idempotency-guard.md)
   (unchanged — see §4), [ADR-0008](0008-fleet-sessions.md) (partly superseded — see §5),
@@ -197,3 +197,29 @@ Written so a stub that agrees with the implementation cannot pass it (roadmap, t
   up to `fleet_max_devices` manifests.
 - **Drop fleets from the stateless era** and let clients configure one URL per device. That is
   the N-connection problem ADR-0008 exists to solve.
+
+## Implementation note (2026-10-21, Workstream B PR 5)
+
+Built as decided, with one correction to §1, found while checking it against the documented
+roll order.
+
+**§1 said a worker dead-letters any entry without `reply_to`.** That is right for a new
+gateway's entries, but [upgrade.md](../upgrade.md#rolling-upgrade-distributed-mode) rolls
+**workers first**, so the window §1 worries about runs the other way round: a *new* worker
+beside *old* gateways, whose entries carry a `session_id` and no `reply_to`. Dead-lettering
+those would fail every handshake-era call for the length of the roll.
+
+So the worker's rule is:
+
+- **`reply_to` present:** publish there and nowhere else. It must name a reply stream or a
+  session results stream; anything else is dead-lettered `invalid reply route`.
+- **No `reply_to`, a `session_id`:** publish to `session:{id}:results`, which is what the entry's
+  sender, an old gateway, is waiting on.
+- **Neither:** dead-letter `no reply route`, publish nothing. The invariant §1 exists for holds
+  either way: nothing is ever published to the shared `session::results`.
+
+The route is checked **before** the call runs, not after. An entry with nowhere to answer
+is not executed, so a non-idempotent call cannot take effect with its result discarded.
+
+The other direction (a new gateway beside an old worker) is covered as §1 says: a stateless
+entry also carries `session_id = req:{request_id}`, and the gateway waits on both keys.
