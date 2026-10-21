@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from loguru import logger
 
-from device_mcp_gateway import __version__, fleet_service, metrics
+from device_mcp_gateway import fleet_service, metrics
 from device_mcp_gateway.api.dispatch import _GATEWAY_ID
 from device_mcp_gateway.api.exchange import ExchangeTimeout, ExchangeUnavailable
 from device_mcp_gateway.api.streamable import (
@@ -42,7 +42,7 @@ from device_mcp_gateway.api.streamable import (
 )
 from device_mcp_gateway.audit import audit_log
 from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, RPC_NO_WORKER, rpc_error
-from device_mcp_gateway.fleet_service import FleetManifest
+from device_mcp_gateway.fleet_service import FleetManifest, fleet_initialize_response
 from device_mcp_gateway.ratelimit import rate_limit, rate_limit_principal
 from device_mcp_gateway.rbac import SCOPE_TOOLS_CALL, require_scope
 from device_mcp_gateway.registry.server import Registry
@@ -181,21 +181,7 @@ async def fleet_streamable_post(request: Request, response: Response, devices: s
         await _publish_tools(request, session_id, manifest)
         response.headers[SESSION_HEADER] = session_id
 
-        from device_mcp_gateway.pods.pod_base import negotiate_protocol_version
-
-        params = payload.get("params") or {}
-        return _json(
-            {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
-                    "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "mcp-fleet", "version": __version__},
-                },
-            },
-            response,
-        )
+        return _json(fleet_initialize_response(msg_id, payload.get("params")), response)
 
     if session_id is None:
         # Same reasoning as the per-device transport: in distributed mode the session id

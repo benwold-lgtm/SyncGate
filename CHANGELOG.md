@@ -10,6 +10,22 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
 
 ## [Unreleased]
 
+### Read this before upgrading
+
+- **`initialize` now advertises `2025-11-25` and `2025-06-18` only** (roadmap decision 3). A
+  client asking for `2025-03-26` or `2024-11-05` is answered with `2025-11-25`, which the
+  handshake specifies as "continue on this version or disconnect". Neither was ever tested
+  against, so the gateway no longer claims to speak them. `2025-11-25` is now the preferred
+  version, which is what an SDK-default client offers.
+
+### Changed
+
+- **One `initialize` builder** (`core/protocol.py`) replaces the four hand-built copies in the
+  device pod, the SSE fleet, the Streamable HTTP fleet and the fleet service. The supported
+  versions, the negotiation and the capability sets live there too.
+  `tests/test_protocol.py` checks every result shape a pod produces against the official
+  SDK's wire models at each advertised revision, and fails if the model would drop a field.
+
 ## [0.3.9] - 2026-10-20
 
 ### Read this before upgrading
