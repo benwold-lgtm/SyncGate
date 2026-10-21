@@ -148,8 +148,8 @@ full duration; a bounded server-side poll is a possible future enhancement.
 
 | Symptom | Where it shows | What it means |
 |---------|----------------|---------------|
-| `no_worker` (JSON-RPC `-32001`) | error event on the SSE stream | The gateway accepted the call but no worker served it before the timeout. |
-| `duplicate_suppressed` (JSON-RPC `-32002`) | error event on the SSE stream | A non-idempotent call was redelivered after a prior attempt began; the guard refused to re-run it to avoid a double side effect (F-08). |
+| `no_worker` (JSON-RPC `-32001`) | the JSON-RPC error in the POST's response | The call reached no worker that could serve it: no pod (e.g. mid-move), or the device is quarantined (ADR-0015). A request whose deadline passes with no answer is a **504** instead. |
+| `duplicate_suppressed` (JSON-RPC `-32002`) | the JSON-RPC error in the POST's response | A non-idempotent call was redelivered after a prior attempt began; the guard refused to re-run it to avoid a double side effect (F-08). |
 | `circuit_open` (envelope) | tool result | The worker reached the device path, but the breaker is open from prior failures. |
 | `http_error` (envelope) | tool result | The device answered with a >= 400 status (the body is included). |
 | `connection_error` / `timeout` (envelope) | tool result | The device couldn't be reached / didn't answer in time. |

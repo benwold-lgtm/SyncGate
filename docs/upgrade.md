@@ -12,7 +12,7 @@ as potentially breaking. The compatibility surfaces that matter for a live upgra
 
 | Surface | Stability | Notes |
 |---------|-----------|-------|
-| HTTP/MCP API (`/v1/devices…`, SSE) | additive by preference, **not guaranteed within a minor** | while the project is `0.x` a patch release may move a route; every such change is called out in the release notes and listed under [breaking API changes](#breaking-api-changes) |
+| HTTP/MCP API (`/v1/devices…`, `/mcp`) | additive by preference, **not guaranteed within a minor** | while the project is `0.x` a patch release may move a route; every such change is called out in the release notes and listed under [breaking API changes](#breaking-api-changes) |
 | Redis data model (streams, registry keys, lease keys) | **mixed-version safe within a minor** — see below | the call-stream entry is forward/back-compatible by design |
 | Config schema (`config.yaml`) | additive; unknown keys **warn, don't fail** (F-50) | a new required gate is the exception — see [breaking gates](#breaking-configuration-gates) |
 | Encrypted-credential format (Fernet/MultiFernet) | stable | key rotation is orthogonal — see [secret-rotation.md](secret-rotation.md) |
@@ -77,8 +77,8 @@ IMG='ghcr.io/benwold-lgtm/device-mcp-gateway:<tag>@sha256:<digest>'
 kubectl -n mcp set image deploy/device-mcp-worker worker="$IMG"
 kubectl -n mcp rollout status deploy/device-mcp-worker
 
-# 2. Then the gateway — stateless; losing a replica only drops its in-flight SSE streams,
-#    which clients reconnect and retry (F-20).
+# 2. Then the gateway — stateless; losing a replica only drops its in-flight requests,
+#    which clients retry (F-20).
 kubectl -n mcp set image deploy/device-mcp-gateway gateway="$IMG"
 kubectl -n mcp rollout status deploy/device-mcp-gateway
 ```
@@ -122,9 +122,11 @@ that talks to the management API directly.
 
 | Version | Change | What to do |
 |---------|--------|------------|
-| **0.4.0** *(announced, not yet released)* | The HTTP+SSE endpoints are removed: `GET /v1/devices/{hostname}/sse`, `POST /v1/devices/{hostname}/messages`, `GET /v1/fleet/sse`, `POST /v1/fleet/messages`. Deprecated since 0.3.0. | Move clients to `POST /v1/devices/{hostname}/mcp` and, for fleets, to a fleet handle (next row). |
-| **0.4.0** *(announced, not yet released)* | `POST`/`PUT /v1/devices` **refuses** a `transport` field with a 400, `"sse"` included. With SSE gone it selects nothing, and accepting it would claim a choice that no longer exists. Stored devices are migrated (the field is dropped on read), and a pre-0.4.0 archive restores with a warning rather than a refusal. `transport.default` / `transport.sse.*` in config are ignored with a startup warning. | Stop sending `transport` on registration and edits. **Upgrade the console (UI BFF) first:** it sends the field back on every device edit. Remove the `transport:` block from config at leisure. |
-| **0.4.0** *(announced, not yet released)* | Fleets gain **handles** ([ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) §5): `POST /v1/fleets` mints one over a fixed device set, and `POST /v1/fleet/{handle}/mcp` serves it in both protocol eras. `POST /v1/fleet/mcp?devices=…` keeps working for handshake-era clients and is deprecated. A `2026-07-28` (stateless) client must use a handle. | Mint a handle per fleet and configure clients with its URL. |
+| **0.4.0** | The HTTP+SSE endpoints are removed: `GET /v1/devices/{hostname}/sse`, `POST /v1/devices/{hostname}/messages`, `GET /v1/fleet/sse`, `POST /v1/fleet/messages`. Deprecated since 0.3.0. | Move clients to `POST /v1/devices/{hostname}/mcp` and, for fleets, to a fleet handle (next row). |
+| **0.4.0** | `POST`/`PUT /v1/devices` **refuses** a `transport` field with a 400, `"sse"` included. With SSE gone it selects nothing, and accepting it would claim a choice that no longer exists. Stored devices are migrated (the field is dropped on read), and a pre-0.4.0 archive restores with a warning rather than a refusal. `transport.default` / `transport.sse.*` in config are ignored with a startup warning. | Stop sending `transport` on registration and edits. **Upgrade the console (UI BFF) first:** it sends the field back on every device edit. Remove the `transport:` block from config at leisure. |
+| **0.4.0** | `initialize` advertises **`2025-11-25` and `2025-06-18` only**. A client asking for `2025-03-26` or `2024-11-05` is answered `2025-11-25`, which the handshake specifies as "continue on this version or disconnect". Neither was ever tested against. | Nothing for an SDK-default client, which already offers `2025-11-25`. A pinned old client must move to `2025-06-18` or later. |
+| **0.4.0** | The **stateless era (`2026-07-28`)** is served on the same `/mcp` URLs. A request is stateless when its `MCP-Protocol-Version` header names a modern revision, or its `params._meta` carries the envelope. Every other request takes the handshake path, unchanged. | Nothing for existing clients. A modern client's refusals are the protocol's own codes with their HTTP statuses: see [error-catalog.md](error-catalog.md#stateless-era-refusals-2026-07-28). |
+| **0.4.0** | Fleets gain **handles** ([ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) §5): `POST /v1/fleets` mints one over a fixed device set, and `POST /v1/fleet/{handle}/mcp` serves it in both protocol eras. `POST /v1/fleet/mcp?devices=…` keeps working for handshake-era clients and is deprecated. A `2026-07-28` (stateless) client must use a handle. | Mint a handle per fleet and configure clients with its URL. |
 | **0.3.8** | A **registered** device that is not serving now answers **503 with `Retry-After`** on `POST /v1/devices/{hostname}/mcp`, `GET /v1/devices/{hostname}/sse` and `POST /v1/devices/{hostname}/messages`, where it answered 404. **404 now means only "not registered".** The old 404 told a client a device being moved between workers did not exist, and on Streamable HTTP it also read as the spec's "session expired", so a conforming client re-initialised into it instead of backing off. | If a client or alert keys on 404 from these endpoints to mean "device unavailable", key on 503 instead, and honour `Retry-After`. Keep treating 404 as "not registered". |
 | **0.3.6** | `POST /v1/admin/restore` is gone. It is now `POST /v1/admin/restore/preview` (needs `backup:read`, writes nothing, returns `plan_digest`/`plan_token`) and `POST /v1/admin/restore/apply` (needs `backup:write`, requires that `plan_token`). The `dry_run` body field no longer exists — which operation runs is which route you call, not a flag inside a body the caller controls. | Update any script or client posting to the old endpoint: preview first, then apply with the token it returned. A missing, mismatched, forged or expired (7-day) token is refused as `ERR_PLAN_STALE`. See [runbook.md](runbook.md#restore-from-a-backup). |
 | **0.3.6** | `PUT /v1/devices/{hostname}` now **refuses** `expected_tls_spki_sha256` with a 400. It previously accepted the field and silently discarded it, so this breaks nothing that was working — but a caller that was sending it will now see an error where it used to see a 200. | Supply the digest when *registering* the device, or accept the key the device is presenting with `POST /v1/devices/{hostname}/fingerprint/approve`. |
@@ -133,6 +135,46 @@ that talks to the management API directly.
 answers 503 in distributed mode without it, because a plan token minted under a process-local
 key cannot be verified by the replica the apply is routed to. Set the same value on every
 replica. Embedded mode is unaffected.
+
+---
+
+## 0.4.0: transport removed
+
+0.4.0 removes HTTP+SSE and the per-device `transport` field that selected it. Everything below
+is in the [breaking API changes](#breaking-api-changes) table; this section is what to do, in
+order.
+
+1. **Move every client off `/sse`.** `GET /v1/devices/{hostname}/sse` and
+   `POST …/messages?session_id=` are gone (404). The device's URL is now
+   `/v1/devices/{hostname}/mcp`. Any MCP client that speaks Streamable HTTP, which is every
+   current SDK, uses it as is: handshake-era clients get a session, and `2026-07-28` clients
+   are served statelessly. The same goes for fleets: `/v1/fleet/sse` and `/v1/fleet/messages`
+   are gone. Mint a handle (`POST /v1/fleets`) and use `/v1/fleet/{handle}/mcp`, or, for a
+   handshake-era client, keep `/v1/fleet/mcp?devices=…`, which is deprecated.
+2. **Upgrade the console first.** SyncGate-UI sent `transport: "sse"` on every device edit
+   until its #78. A console older than that against 0.4.0 gets a 400 on every edit and claim.
+3. **Stop sending `transport`.** `POST`/`PUT /v1/devices` refuses the key with a 400 whose
+   message names the removal, whatever the value. Responses no longer carry it, so a client
+   that round-trips a device record does not send it back.
+4. **Roll as usual, workers first.** Both directions of skew are safe for the length of a roll
+   ([ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md) §1 and its implementation
+   note):
+   - a **new worker beside old gateways** answers their session-bound calls on their session,
+     as before;
+   - a **new gateway beside an old worker** marks each stateless call with a session id unique
+     to that call, which the old worker turns into a results stream nothing else uses.
+   During the roll, old gateway replicas still serve `/sse`. A client that has not moved yet
+   loses it when the last old replica goes.
+5. **Tidy config at leisure.** `transport.default` and `transport.sse.*` are ignored, and a
+   startup warning names them. Remove the `transport:` block.
+
+**Nothing is migrated by hand.** A stored device keeps working: the field is dropped when its
+record is read (Redis or SQLite; the SQLite column stays, unused, so no schema change is
+needed). A pre-0.4.0 backup archive restores, and each device that carried the field reports
+`dropped_fields: ["transport"]` in the preview and the run.
+
+**Dashboards.** `mcp_active_sse_connections` and `mcp_sse_messages_dropped_total` are gone.
+Remove panels and alert rules that use them.
 
 ---
 

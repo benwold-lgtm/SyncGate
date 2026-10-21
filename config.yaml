@@ -416,13 +416,6 @@ auth:
       - "read"
       - "write"
       
-transport:
-  # SSE is the only supported gateway transport.
-  default: "sse"
-  sse:
-    # Seconds between keep-alive pings when the SSE queue is idle.
-    keep_alive_interval: 15
-
 discovery:
   # How the gateway finds a device's tool set. For upstream_kind "openapi" that means
   # fetching a spec (spec_url, or these paths tried in order); for upstream_kind "mcp"

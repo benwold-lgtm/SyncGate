@@ -13,7 +13,7 @@ baseline to be tuned honestly. This doc is the method; the runnable harness live
 
 | Workload | Path exercised | Question it answers |
 |----------|----------------|---------------------|
-| `toolcall` | SSE open → session endpoint → `tools/call` → result on stream | End-to-end tool-call latency + throughput (the user-facing SLI) |
+| `toolcall` | `POST /v1/devices/{device}/mcp` `tools/call` → result on that response; `--era stateless` (default, `2026-07-28`) or `--era handshake` (one `initialize`, then the session) | End-to-end tool-call latency + throughput (the user-facing SLI) |
 | `register` | `POST /v1/devices` (discovery + translate + spawn) | Onboarding/burst capacity; sizes the spec-translation pool (F-09/F-11) |
 
 Primary metrics: **p50/p90/p99 latency**, **throughput (ok req/s)**, **error rate** and

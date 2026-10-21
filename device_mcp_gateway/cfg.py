@@ -106,6 +106,7 @@ _CONFIG_SCHEMA: dict[str, Any] = {
         "socket_timeout": _NUM,
         "socket_connect_timeout": _NUM,
         "max_connections": int,
+        "pool_timeout": _NUM,
         "pubsub_max_connections": int,
         "retries": int,
         "health_check_interval": _NUM,

@@ -20,14 +20,14 @@ flowchart TB
             SVC["Service: device-mcp-gateway\ntype: ClusterIP  ·  port: 8000"]
 
             subgraph GW_DEP["Deployment: device-mcp-gateway  (stateless — scale freely)"]
-                CTRL["FastAPI Control Plane  :8000\n─────────────────────────────────────\nPOST  /v1/devices          register device\nGET   /v1/devices/{n}/sse  open MCP stream\nPOST  /v1/devices/{n}/messages  invoke tool\nGET   /health  ·  GET  /readyz  ·  GET  /v1/metrics/summary\nProm /metrics on :9100 (dedicated port)\nRate limiting  ·  CORS  ·  X-Request-Id"]
+                CTRL["FastAPI Control Plane  :8000\n─────────────────────────────────────\nPOST  /v1/devices          register device\nPOST  /v1/devices/{n}/mcp  MCP, both eras\nPOST  /v1/fleet/{handle}/mcp  fleet MCP\nGET   /health  ·  GET  /readyz  ·  GET  /v1/metrics/summary\nProm /metrics on :9100 (dedicated port)\nRate limiting  ·  CORS  ·  X-Request-Id"]
             end
 
             PDB_GW["PodDisruptionBudget\ndevice-mcp-gateway-pdb\nminAvailable: 1"]
             PDB_WK["PodDisruptionBudget\ndevice-mcp-worker-pdb\nminAvailable: 1"]
 
             subgraph REDIS_SS["StatefulSet: redis"]
-                REDIS["Redis 7\n─────────────────────────────────────\ndevice registry (Hash per device)\nassignment stream  device:assignments\ntool call streams  device:{n}:calls\nSSE session routing  session:{id}:results\nworker heartbeats  worker:{id}:heartbeat"]
+                REDIS["Redis 7\n─────────────────────────────────────\ndevice registry (Hash per device)\nassignment stream  device:assignments\ntool call streams  device:{n}:calls\nresult routing  session:{id}:results · reply:{request_id}\nworker heartbeats  worker:{id}:heartbeat"]
             end
             REDIS_SVC["Service: redis\nClusterIP  ·  port: 6379"]
             REDIS_PVC[("PVC: redis-data\n/data — Redis AOF")]
@@ -46,7 +46,7 @@ flowchart TB
         API2["Actuator API  :9090\n────────────────\nPOST /actuators/relay\nAuth: OAuth2 CC"]
     end
 
-    LLM      -- "① MCP call  (SSE)" --> ING
+    LLM      -- "① MCP call  (Streamable HTTP POST)" --> ING
     ING      -- "② TLS · route /v1/devices/..." --> SVC
     SVC      -- "③ forward" --> CTRL
     CTRL     -- "④ publish assignment / tool call" --> REDIS_SVC
@@ -54,9 +54,9 @@ flowchart TB
     REDIS    -- "⑤ XREADGROUP" --> WK
     WK       -- "⑥ HTTP + auth + circuit breaker" --> API1
     WK       -- "⑥ HTTP + auth + circuit breaker" --> API2
-    WK       -- "⑦ PUBLISH result" --> REDIS
-    REDIS    -- "⑧ pub/sub" --> CTRL
-    CTRL     -- "⑨ SSE message event" --> LLM
+    WK       -- "⑦ XADD result (reply stream)" --> REDIS
+    REDIS    -- "⑧ XREAD (the waiting replica)" --> CTRL
+    CTRL     -- "⑨ the POST's response body" --> LLM
 
     WK_DEP -. "mounts read-only" .-> CM
     GW_DEP -. "mounts read-only" .-> CM
@@ -81,7 +81,7 @@ flowchart TB
     class PDB_GW,PDB_WK pdb
 ```
 
-> **Response path:** The worker (⑥) calls the device API, receives the JSON body, publishes it to a Redis pub/sub channel (⑦). The gateway instance that owns the SSE session subscribes to that channel (⑧) and delivers the result as an SSE `message` event (⑨) to the LLM client.
+> **Response path:** The worker (⑥) calls the device API and publishes the JSON-RPC result to the one Redis Stream the call names (⑦): its session's `session:{id}:results` for a handshake-era call, or its own single-use `reply:{request_id}` for a stateless one ([ADR-0027](adr/0027-stateless-requests-in-distributed-mode.md)). The gateway replica that took the POST is waiting on that stream (⑧) and returns the result as the response body (⑨). Any replica can take any request.
 
 ---
 
@@ -132,24 +132,21 @@ sequenceDiagram
     participant WK as Worker (pod owner)
     participant API as Device API
 
-    LLM->>GW: GET /v1/devices/sensor-api/sse
-    GW->>REDIS: HSET session:{uuid} hostname gateway_id TTL
-    GW-->>LLM: event: endpoint<br/>data: /v1/devices/sensor-api/messages?session_id={uuid}
-    Note over GW: Subscribe to session:{uuid}:results (pub/sub)
-
-    LLM->>GW: POST /v1/devices/sensor-api/messages?session_id={uuid}<br/>{ jsonrpc: "2.0", method: "tools/call", ... }
-    GW->>REDIS: XADD device:sensor-api:calls<br/>{ request_id, session_id, gateway_id, message }
-    GW-->>LLM: 200 OK { status: "accepted" }
+    LLM->>GW: POST /v1/devices/sensor-api/mcp<br/>MCP-Protocol-Version: 2026-07-28 · Mcp-Method: tools/call<br/>{ jsonrpc: "2.0", id: 1, method: "tools/call", params: { _meta, ... } }
+    Note over GW: Stateless: no session. reply_to = reply:{request_id}
+    GW->>REDIS: XADD device:sensor-api:calls<br/>{ request_id, reply_to, subject, message }
+    GW->>REDIS: XREAD BLOCK reply:{request_id}
 
     Note over WK: Call consumer task wakes
     WK->>REDIS: XREADGROUP device:sensor-api:calls
-    WK->>WK: DevicePod._handle_mcp_message()
+    WK->>WK: resolve reply route (refuse if none)<br/>DevicePod._handle_mcp_message()
     WK->>API: GET /sensors/temperature<br/>X-API-Key: •••<br/>(circuit breaker wraps this call)
     API-->>WK: 200 OK { "temperature": 23.4 }
-    WK->>REDIS: XACK  (call consumed)<br/>PUBLISH session:{uuid}:results { jsonrpc result }
+    WK->>REDIS: XADD reply:{request_id} MAXLEN 1 (short TTL)<br/>XACK (call consumed)
 
-    REDIS-->>GW: pub/sub message
-    GW-->>LLM: event: message<br/>data: { "jsonrpc": "2.0", "result": { "content": [...] } }
+    REDIS-->>GW: the one entry on reply:{request_id}
+    GW->>REDIS: DEL reply:{request_id}
+    GW-->>LLM: 200 { "jsonrpc": "2.0", "id": 1, "result": { "content": [...], "resultType": "complete" } }
 ```
 
 ---
@@ -318,7 +315,7 @@ credentials, in-flight call/result streams), not a cache. So regardless of the o
 
 Size the command and pub/sub connection pools (`redis.max_connections`,
 `redis.pubsub_max_connections`) for your gateway/worker replica count and expected concurrent
-SSE streams. For packaging, make Redis a single switch: **home/Docker** uses the bundled
+in-flight requests: each waiting request holds a pub/sub-pool connection for its blocking read. For packaging, make Redis a single switch: **home/Docker** uses the bundled
 single instance (documented not-HA); **enterprise** defaults to **bring-your-own** endpoint
 (`redis.url` → managed or Sentinel-fronted), with an optional bundled HA subchart for those
 who want it in-cluster.
@@ -478,8 +475,7 @@ Sites that previously only logged a failure now also increment a counter, so req
 
 | Metric | Type | Incremented when |
 |--------|------|------------------|
-| `mcp_tool_call_timeouts_total{hostname}` | counter | the gateway's F6 watcher fires — no worker set `result:{id}` before the deadline |
-| `mcp_sse_messages_dropped_total{hostname}` | counter | an embedded-mode SSE client queue is full and a response is dropped |
+| `mcp_tool_call_timeouts_total{hostname}` | counter | a waiting request's exchange deadline passes before a worker answers (504) |
 | `mcp_dead_letter_total{hostname}` | counter | an undeliverable tool call is moved to `device:{h}:calls:dead` |
 | `mcp_circuit_breaker_opens_total{hostname}` | counter | a device pod's circuit breaker rejects a call |
 

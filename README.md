@@ -5,7 +5,8 @@
 Point the gateway at a REST service and it auto-discovers the OpenAPI spec and translates every
 operation into an MCP tool. Point it at a server that **already speaks MCP** and it federates
 that server's tools instead. Either way an LLM client (Claude Desktop, Cursor, a custom agent)
-connects to one endpoint over SSE, and the same control plane applies: authentication, RBAC
+connects to one endpoint over Streamable HTTP, in either MCP era (the `initialize` handshake
+or the stateless `2026-07-28` revision), and the same control plane applies: authentication, RBAC
 scopes, per-device rate limiting, health checking, circuit breaking, tool-change governance and
 a tamper-evident audit trail.
 
@@ -39,8 +40,8 @@ The gateway supports two modes selected by `registry.mode` in `config.yaml`.
 
 ```
 LLM clients
-    │  Streamable HTTP (POST /v1/devices/{hostname}/mcp)   ← recommended
-    │  HTTP+SSE        (GET  /v1/devices/{hostname}/sse)   ← deprecated
+    │  Streamable HTTP  POST /v1/devices/{hostname}/mcp
+    │  both MCP eras: handshake (2025-11-25, 2025-06-18) and stateless (2026-07-28)
     ▼
 ┌───────────────────────────────────────────────────┐
 │  Gateway (stateless, scale N replicas)            │
@@ -62,7 +63,11 @@ LLM clients
    (translated)         (proxied)
 ```
 
-Gateway instances are stateless — they read from Redis and relay SSE events via Redis pub/sub. Workers own the DevicePods and execute tool calls. All three components scale independently.
+Gateway instances are stateless. They publish each call to the device's Redis Stream and wait
+for the worker's answer on a Redis Stream of their own: the session's stream for a
+handshake-era call, or the call's single-use reply stream for a stateless one
+([ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md)). Workers own the
+DevicePods and execute tool calls. All three components scale independently.
 
 ### Embedded mode (local development)
 
@@ -102,23 +107,26 @@ curl -X POST http://localhost:8000/v1/devices \
   -H "Content-Type: application/json" \
   -d '{"hostname": "my-sensor", "base_url": "http://192.168.1.42"}'
 
-# 5. Talk to it over Streamable HTTP — the response comes back on this request
+# 5. Talk to it — the response comes back on this request. Stateless (2026-07-28): no
+#    handshake, no session; each request carries its own envelope and routing headers.
 curl -X POST http://localhost:8000/v1/devices/my-sensor/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
-#    -> 200, with an Mcp-Session-Id response header. Send that header on subsequent calls:
-#    {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+  -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities":{}}}}'
+#    Or the handshake era, as a 2025-11-25 client does:
+#    {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}
+#    -> 200 with an Mcp-Session-Id header; send that header on subsequent calls.
 
 # 6. Connect an MCP client (see MCP Client Integration below)
 ```
 
-> **Leave `transport` out of registrations.** The field names the transport a device's pod
-> runs internally, not how your client connects, and `"sse"` — its default — is the only
-> value accepted. **From 0.4.0 the field is refused with a `400`**, `"sse"` included
-> ([upgrade.md](docs/upgrade.md#breaking-api-changes)), so an example or script that sends it
-> breaks on upgrade; one that omits it works on both. How a *client* reaches a device is a
-> separate choice made per request: **`POST /v1/devices/{hostname}/mcp`** (Streamable HTTP,
-> recommended) or the deprecated `GET /v1/devices/{hostname}/sse`.
+> **Don't send `transport`.** It selected HTTP+SSE, which 0.4.0 removed, and a registration
+> or edit carrying it is refused with a `400` naming the removal, `"sse"` included
+> ([upgrade.md](docs/upgrade.md#040-transport-removed)). Every device is served on
+> `POST /v1/devices/{hostname}/mcp`. The era a client speaks is its choice, per request, with
+> nothing to configure on the device.
 
 > **Registering a device on a private/LAN address?** By default the gateway refuses
 > targets that resolve to private, loopback, or link-local addresses (the Tier-0 SSRF
@@ -159,7 +167,10 @@ curl -X POST http://localhost:8000/v1/devices \
 curl -X POST http://localhost:8000/v1/devices/my-sensor/mcp \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+  -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
 ---
@@ -175,22 +186,22 @@ cadence, because single-operator is a design decision rather than a smaller conf
 
 ## MCP Client Integration
 
-> **Which endpoint should a client use?**
+> **One endpoint per device, both MCP eras.** `POST /v1/devices/{hostname}/mcp` (Streamable
+> HTTP) answers each JSON-RPC request on the response to that request.
 >
-> | | Endpoint | Status |
+> | Era | How a client speaks it | What it gets |
 > |---|---|---|
-> | **Streamable HTTP** | `POST /v1/devices/{hostname}/mcp` | **Recommended.** The JSON-RPC response returns on the request that carried it. |
-> | HTTP+SSE | `GET /v1/devices/{hostname}/sse` + `POST …/messages` | **Deprecated** upstream, with a removal clock. Kept for clients that do not speak Streamable HTTP yet; scheduled for removal one minor release after the new transport completes. |
+> | **Stateless** (`2026-07-28`) | Every request carries the `_meta` envelope and the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers | No handshake and no session. `server/discover` describes the server. Results carry `resultType` and, for lists and reads, cache hints |
+> | **Handshake** (`2025-11-25`, `2025-06-18`) | `initialize` first, then the `Mcp-Session-Id` it returns | A session bound to the principal that opened it, as before |
 >
-> Both reach the same device with the same tools, scopes and rate limits — the choice is
-> per client, not per device. Prefer `/mcp` for anything new. The examples below give the
-> Streamable HTTP form first and the SSE form as a fallback.
+> An SDK client in its default mode probes `server/discover` and lands in the stateless era.
+> HTTP+SSE (`/sse`, `/messages`) was removed in 0.4.0.
 
 ### Claude Desktop
 
 Claude Desktop's native server config **cannot attach an `Authorization` header**, and
 every gateway deployment requires the bearer key — so pointing it
-straight at the SSE URL will 401. Bridge through
+straight at the `/mcp` URL will 401. Bridge through
 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) instead: it runs locally
 (Node 18+), speaks stdio to Claude Desktop, and forwards the header upstream.
 
@@ -218,9 +229,8 @@ Config file locations:
 }
 ```
 
-If your `mcp-remote` build predates Streamable HTTP support, swap the URL back to
-`http://localhost:8000/v1/devices/my-sensor/sse` — everything else is identical, and the
-deprecated route still works.
+`mcp-remote` must be a build with Streamable HTTP support (any current release); the gateway has
+no other transport since 0.4.0.
 
 Two details that matter:
 
@@ -251,107 +261,91 @@ The key naming the transport is the client's, not the gateway's — some call it
 others `"streamable-http"`; check your client's docs. What the gateway requires is only the
 URL and the header.
 
-<details>
-<summary>The deprecated SSE form, for clients that need it</summary>
-
-```json
-{
-  "mcpServers": {
-    "my-sensor": {
-      "type": "sse",
-      "url": "http://localhost:8000/v1/devices/my-sensor/sse",
-      "headers": { "Authorization": "Bearer <gateway-api-key>" }
-    }
-  }
-}
-```
-</details>
-
 ### Multiple devices in one session (fleet)
 
-Registering more than a couple of devices? A per-device endpoint is one session per device —
-fine for one or two, but an AI client needs a separate config entry (and, where header-based
-auth is required, a separate bridge process) per device. The **fleet** endpoint aggregates
-several devices' tools into a single MCP session instead, with tool names namespaced by
-hostname (`my-sensor_get_readings`, `my-fan_get_readings`, ...) so there's no collision even
-when two devices expose the same operation:
+Registering more than a couple of devices? A per-device endpoint is one configured server per
+device — fine for one or two, but an AI client needs a separate config entry (and, where
+header-based auth is required, a separate bridge process) per device. A **fleet** aggregates
+several devices' tools behind one URL instead, with tool names namespaced by hostname
+(`my-sensor_get_readings`, `my-fan_get_readings`, ...) so there's no collision even when two
+devices expose the same operation.
+
+**Mint a fleet handle** ([ADR-0027](docs/adr/0027-stateless-requests-in-distributed-mode.md) §5).
+The device set is fixed when the handle is minted and bound to the principal who minted it:
+
+```bash
+curl -s -X POST http://localhost:8000/v1/fleets \
+  -H "Authorization: Bearer <gateway-api-key>" -H "Content-Type: application/json" \
+  -d '{"devices": ["my-sensor", "my-fan", "my-thermostat"]}'
+# -> {"handle": "flt_3f9c…", "devices": [...], "url": "/v1/fleet/flt_3f9c…/mcp", ...}
+```
+
+Then configure the client with that URL. It serves both MCP eras:
 
 ```json
 {
   "mcpServers": {
     "my-fleet": {
       "type": "http",
-      "url": "http://localhost:8000/v1/fleet/mcp?devices=my-sensor,my-fan,my-thermostat",
+      "url": "http://localhost:8000/v1/fleet/flt_3f9c…/mcp",
       "headers": { "Authorization": "Bearer <gateway-api-key>" }
     }
   }
 }
 ```
 
-`devices` is read when the session opens and ignored afterwards, so the fleet cannot be
-widened by a later request.
+- `GET /v1/fleets` lists your handles; `DELETE /v1/fleets/{handle}` removes one.
+- Anyone but the minting principal is told the handle does not exist (404). No request can add a
+  device to a fleet; mint a new handle instead.
+- Membership is re-resolved on every request: a member that is deregistered or down is skipped,
+  and an F-41 tool change on a member shows up on the next `tools/list`.
+- Same auth model as the per-device endpoint (`tools:call`). Capped at 25 devices per fleet
+  (`registry.fleet_max_devices`) and 100 handles per principal
+  (`registry.fleet_handles_per_principal`). Handles persist across restarts. A backup archive
+  does not carry them yet; a restore says so.
 
-(For Claude Desktop, use the same `mcp-remote` config as above with this fleet URL in
-place of the per-device one.)
-
-<details>
-<summary>The deprecated SSE fleet form</summary>
-
-```json
-{
-  "mcpServers": {
-    "my-fleet": {
-      "type": "sse",
-      "url": "http://localhost:8000/v1/fleet/sse?devices=my-sensor,my-fan,my-thermostat",
-      "headers": { "Authorization": "Bearer <gateway-api-key>" }
-    }
-  }
-}
-```
-</details>
-
-Same auth model as the per-device endpoint (`tools:call` scope, session bound to the
-principal that opened it) — this doesn't grant access to anything a caller couldn't
-already reach one device at a time. Capped at 25 devices per session by default
-(`registry.fleet_max_devices`).
-
-> **The rest of this section is about the deprecated SSE fleet route only.** On
-> `POST /v1/fleet/mcp` there is no split to describe: every method, `tools/call` included,
-> answers on the request that asked, identically in both modes. If you are using the
-> recommended endpoint you can skip to the next section.
-
-> **On the SSE fleet route, where the reply arrives differs by method, and by mode.** A
-> conforming MCP client handles this already, because both shapes are legal — but anyone
-> writing a client by hand against `POST /v1/fleet/messages` will hit it, so it is written
-> down here:
->
-> | Mode | `initialize`, `ping`, `tools/list` | `tools/call` |
-> |---|---|---|
-> | **distributed** | answered **inline** in the POST response body | POST returns `{"status": "accepted"}`; the result arrives on the SSE stream |
-> | **embedded** | on the SSE stream (POST body is an ack) | on the SSE stream (POST body is an ack) |
->
-> The gateway can answer the first three from shared state in distributed mode, so it
-> does rather than making a round trip through a worker. `tools/call` must reach the
-> worker holding the device, so its result comes back the only way it can — over the
-> stream the session already holds open.
->
-> **Read the POST body first: if it carries a `result`, that is your answer.** Otherwise
-> match on the SSE stream by JSON-RPC `id`. A client that only ever waits on the stream
-> will hang on `tools/list` in distributed mode; one that only ever reads the POST body
-> will lose every tool result. The per-device endpoint
-> (`POST /v1/devices/{hostname}/messages`) has no such split — it publishes everything to
-> the worker and always answers on the stream.
+**`/v1/fleet/mcp?devices=a,b,…`** (ADR-0008's form) still serves **handshake-era** clients and is
+**deprecated**: `devices` is read on `initialize` and ignored afterwards, and its responses carry
+`Deprecation: true`. A stateless client sent there gets a 400 pointing at `POST /v1/fleets`,
+because there is no `initialize` to fix the fleet on. (For Claude Desktop, use the same
+`mcp-remote` config as above with the fleet URL in place of the per-device one.)
 
 ### Manual invocation (Streamable HTTP)
 
-One POST per message, and the reply is the response body. The server mints the session id on
-`initialize` and returns it in the `Mcp-Session-Id` header — do not supply your own.
+One POST per message, and the reply is the response body.
+
+**Stateless (`2026-07-28`).** No handshake and no session. Every request carries the envelope in
+`params._meta` and three routing headers that must agree with the body (`Mcp-Name` only for
+`tools/call`, `prompts/get` and `resources/read`):
+
+```bash
+H=(-H "Authorization: Bearer <api-key>" -H "Content-Type: application/json"
+   -H "MCP-Protocol-Version: 2026-07-28")
+META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}'
+
+# what this server is and serves
+curl -s -X POST "${H[@]}" -H "Mcp-Method: server/discover" http://localhost:8000/v1/devices/my-sensor/mcp \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{$META}}"
+
+# a tool call
+curl -s -X POST "${H[@]}" -H "Mcp-Method: tools/call" -H "Mcp-Name: get_readings" \
+  http://localhost:8000/v1/devices/my-sensor/mcp \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",
+       \"params\":{\"name\":\"get_readings\",\"arguments\":{\"sensor_id\":1},$META}}"
+```
+
+A refusal is the protocol's own code with its HTTP status — `-32020` (400) when a header disagrees
+with the body, `-32022` (400) naming the served versions — see
+[error-catalog.md](docs/error-catalog.md#stateless-era-refusals-2026-07-28).
+
+**Handshake (`2025-11-25`, `2025-06-18`).** The server mints the session id on `initialize` and
+returns it in the `Mcp-Session-Id` header — do not supply your own.
 
 ```bash
 # initialize — note the -D- to capture the session header
 curl -sD- -X POST -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
   http://localhost:8000/v1/devices/my-sensor/mcp \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}'
 
 # then send the returned id back on every subsequent message
 curl -s -X POST -H "Authorization: Bearer <api-key>" -H "Content-Type: application/json" \
@@ -364,33 +358,6 @@ curl -s -X DELETE -H "Authorization: Bearer <api-key>" \
   -H "Mcp-Session-Id: <id-from-above>" \
   http://localhost:8000/v1/devices/my-sensor/mcp
 ```
-
-### Manual invocation (SSE transport — deprecated)
-
-The SSE transport uses a two-step protocol. The server assigns a session ID — do not supply your own.
-
-**Step 1 — Open the event stream:**
-```bash
-curl -N -H "Authorization: Bearer <api-key>" \
-  http://localhost:8000/v1/devices/my-sensor/sse
-```
-
-The first event is `endpoint` and its `data` is the POST URL for this session:
-```
-event: endpoint
-data: /v1/devices/my-sensor/messages?session_id=<server-assigned-uuid>
-```
-
-**Step 2 — Send a tool invocation on that session:**
-```bash
-curl -X POST "http://localhost:8000/v1/devices/my-sensor/messages?session_id=<uuid-from-step-1>" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <api-key>" \
-  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-       "params": {"name": "get_readings", "arguments": {"sensor_id": 1}}}'
-```
-
-The response arrives as a `message` event on the open SSE stream, not in the HTTP response body.
 
 ---
 
@@ -418,7 +385,7 @@ With OIDC enabled the static keys become a **break-glass fallback** (OIDC JWT �
 
 The seam (`authenticate()` → `Principal{subject, scopes}`) means routes are unchanged either way.
 
-Rate limits (per source IP): `/health` and `/readyz` — 300 req/min; `POST /v1/devices` — 60 req/min; `POST /messages` — 600 req/min. Returns 429 on excess.
+Rate limits (per source IP): `/health` and `/readyz` — 300 req/min; `POST /v1/devices` — 60 req/min; `POST …/mcp` (device and fleet) — 600 req/min. Returns 429 on excess.
 
 > **API versioning.** The management API is served under a `/v1` prefix (e.g. `POST /v1/devices`). Operational probes (`/health`, `/readyz`) and the Prometheus scrape endpoint are intentionally **unversioned** — they are infra contracts consumed by Kubernetes and Prometheus, not application clients. A backward-incompatible change to the management API will introduce `/v2` and dual-mount `/v1` for a deprecation window.
 
@@ -437,12 +404,13 @@ Rate limits (per source IP): `/health` and `/readyz` — 300 req/min; `POST /v1/
 | `GET` | `/v1/devices/{hostname}/features` | Everything a device exposes — **tools, resources and prompts** — from the cached manifest, **with or without a running pod**. What the console and `device-mcp devices show` read (`devices:read`) |
 | `GET` | `/v1/devices/{hostname}/tools/diff` | The device's most recent tool-set change — added/removed/changed tools + breaking flag (`devices:read`) |
 | `GET` | `/v1/devices/{hostname}/diagnostics` | "Why is my device down?" — status, last check + age, spec/manifest state, spawn error, circuit breaker (`devices:read`) |
-| `GET` | `/v1/devices/{hostname}/sse` | Open SSE stream (MCP transport — **deprecated**, see below) |
-| `POST` | `/v1/devices/{hostname}/messages` | Send a JSON-RPC 2.0 message via SSE |
-| `POST` | `/v1/devices/{hostname}/mcp` | Streamable HTTP transport — the JSON-RPC response returns on **this** request, in both modes (`tools:call`) |
-| `GET` | `/v1/fleet/sse?devices=a,b,…` | Open one MCP session spanning several devices — tool names namespaced by hostname (`tools:call`) |
-| `POST` | `/v1/fleet/messages` | Send a JSON-RPC 2.0 message on a fleet session (`tools:call`) |
-| `POST` | `/v1/fleet/mcp?devices=a,b,…` | Fleet session over Streamable HTTP — `devices` on `initialize` only; every method, `tools/call` included, answers on **this** request in both modes (`tools:call`) |
+| `POST` | `/v1/devices/{hostname}/mcp` | The device's MCP endpoint (Streamable HTTP), **both eras**: stateless `2026-07-28` requests, or a handshake session. The JSON-RPC response returns on **this** request, in both modes (`tools:call`) |
+| `DELETE` | `/v1/devices/{hostname}/mcp` | End a handshake-era session (`Mcp-Session-Id`) |
+| `POST` | `/v1/fleets` | Mint a fleet handle over `{"devices": [...]}` (`tools:call`) |
+| `GET` | `/v1/fleets` | The caller's own fleet handles (`tools:call`) |
+| `DELETE` | `/v1/fleets/{handle}` | Remove a fleet handle — owner only, 404 otherwise (`tools:call`) |
+| `POST` | `/v1/fleet/{handle}/mcp` | A fleet's MCP endpoint, **both eras** — tool names namespaced by hostname (`tools:call`) |
+| `POST` | `/v1/fleet/mcp?devices=a,b,…` | **Deprecated.** Handshake-era fleet session — `devices` on `initialize` only (`tools:call`) |
 | `GET` | `/v1/devices/{hostname}/deadletter` | Inspect dead-lettered tool calls (distributed mode; `devices:read`) |
 | `POST` | `/v1/devices/{hostname}/deadletter/replay` | Re-publish dead-lettered calls onto the call stream; optional `{"ids":[...]}` (`devices:write`) |
 | `DELETE` | `/v1/devices/{hostname}/deadletter` | Drain the dead-letter queue; optional `{"ids":[...]}` (`devices:write`) |
@@ -526,7 +494,6 @@ Two things worth knowing before you register one:
   "reachable": true,
   "pod_active": true,
   "last_check": 1717500000.0,
-  "transport": "sse",
   "rate_limit_rps": null,
   "spawn_error": null
 }
@@ -539,7 +506,6 @@ Two things worth knowing before you register one:
   "mode": "embedded",
   "base_url": "http://192.168.1.42",
   "spec_url": null,
-  "transport": "sse",
   "reachable": true,
   "pod_active": true,
   "worker_id": null,
@@ -813,7 +779,7 @@ All settings live in `config.yaml`. Override the file location with `MCP_CONFIG`
 | `registry.spec_poll_interval` | `300` | Seconds between spec refresh checks |
 | `registry.spec_cache_ttl` | `3600` | Spec cache lifetime in seconds |
 | `registry.max_concurrent_pods` | `50` | Max simultaneous device pods (embedded mode only) |
-| `registry.fleet_max_devices` | `25` | Max devices one fleet session (`/v1/fleet/mcp` or `/v1/fleet/sse`) may span |
+| `registry.fleet_max_devices` | `25` | Max devices one fleet (a handle, or a `/v1/fleet/mcp` session) may span |
 | `redis.url` | `"redis://localhost:6379/0"` | Redis connection URL. Override with `MCP_REDIS_URL` |
 | `redis.socket_timeout` | `5` | Redis socket timeout in seconds |
 | `redis.max_connections` | `20` | Redis connection pool size per gateway instance |
@@ -821,8 +787,7 @@ All settings live in `config.yaml`. Override the file location with `MCP_CONFIG`
 | `auth.type` | `api_key` | Default auth type for devices (`api_key`, `oauth2`, `none`) |
 | `discovery.timeout` | `10` | Spec discovery request timeout in seconds |
 | `storage.db_path` | `./data/devices.db` | SQLite path (embedded mode only; use `/app/data/devices.db` in Docker) |
-| `transport.default` | `sse` | Default device transport (`sse` is the only supported value). Ignored, with a startup warning, from 0.4.0 |
-| `transport.sse.keep_alive_interval` | `15` | Seconds between SSE keepalive pings |
+| `registry.fleet_handles_per_principal` | `100` | Fleet handles one principal may hold |
 | `logging.level` | `INFO` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `logging.file` | `logs/gateway.log` | Log file path |
 
@@ -980,7 +945,7 @@ See [`docs/kubernetes-architecture.md`](docs/kubernetes-architecture.md) for the
 The gateway and each worker export Prometheus metrics on a **dedicated metrics port**
 (`metrics.port`, default `9100`) at `GET /metrics` — RED-style HTTP and tool-call
 metrics (route-template-labelled to stay low-cardinality), fleet gauges
-(`mcp_registered_devices`, `mcp_active_pods`, `mcp_active_sse_connections`), and the
+(`mcp_registered_devices`, `mcp_active_pods`), and the
 worker autoscaling signal `mcp_worker_pending_calls`. The gateway Deployments carry
 `prometheus.io/scrape` annotations; a `ServiceMonitor` example, full metric reference,
 scrape config, and Grafana starter queries are in
@@ -1070,9 +1035,17 @@ Common causes:
 2. Check the gateway logs for `circuit breaker open` — the device returned 5xx errors 5 times in a row. Wait 60 seconds for the breaker to reset, or restart the pod.
 3. In distributed mode, check the worker logs for the actual httpx error.
 
-### SSE stream connects but tool result never arrives
+### A stateless request is refused with `-32020`
 
-Ensure you are POSTing to `?session_id=<uuid>` where the UUID was taken from the `endpoint` event's `data` field — not a client-chosen value. The gateway assigns session IDs; client-supplied values are silently ignored.
+A routing header disagrees with the body: `MCP-Protocol-Version` must equal the envelope's
+`io.modelcontextprotocol/protocolVersion`, `Mcp-Method` the body's `method`, and `Mcp-Name` the
+tool name, prompt name or resource URI. The SDK sets all three; a hand-built client usually
+forgets `Mcp-Name`. Every refusal code is in [docs/error-catalog.md](docs/error-catalog.md).
+
+### A client configured with an `/sse` URL gets 404
+
+HTTP+SSE was removed in 0.4.0. Point the client at `/v1/devices/{hostname}/mcp`; see
+[upgrade.md](docs/upgrade.md#040-transport-removed).
 
 ### Gateway returns `503` on `/readyz`
 

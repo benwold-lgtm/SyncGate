@@ -35,7 +35,7 @@ confidence: link the run, the baseline, or the recording that closed it.
 **What is unvalidated.** Every resilience claim in
 [failure-modes.md](failure-modes.md): worker-kill reassignment, Redis flap recovery,
 blast-radius containment on a slow upstream, breaker open/half-open transitions, lease-flap
-convergence, SSE resume after a gateway kill, and degraded-mode behaviour at zero workers.
+convergence, a client's retry after a gateway kill, and degraded-mode behaviour at zero workers.
 
 **Why we cannot test it here.** The experiments need a live multi-node platform plus a fault
 injector (Toxiproxy or equivalent) sitting between the gateway, Redis and the upstreams.
@@ -57,8 +57,8 @@ uninterpretable without a healthy baseline to compare against.
 
 **What is unvalidated.** Throughput and latency under load, and therefore every number
 derived from them: connection-pool sizes, the HPA thresholds, the admission-control
-watermark, `max_concurrent_calls_per_device` / `_per_worker`, and the SSE pub/sub pool
-sizing. These are reasoned defaults, not measured ones.
+watermark, `max_concurrent_calls_per_device` / `_per_worker`, and the pub/sub pool
+sizing (one connection per waiting request). These are reasoned defaults, not measured ones.
 
 **Why we cannot test it here.** A meaningful baseline needs a multi-node cluster, an upstream
 that behaves like a real API (latency distribution, rate limiting, connection limits), and
@@ -95,7 +95,7 @@ event is not.
 **Do this while you are here.** A Sentinel client is built with `master_for()`, which takes
 its own connection kwargs — and `decode_responses` is exactly the one that gets forgotten,
 because the single existing construction site passes it as a literal and nothing enforces it.
-[TG-6](#tg-6--hash-reading-redis-paths-in-the-unit-tier) measures what that costs: every
+[TG-6](#tg-6--hash-reading-redis-paths-in-the-unit-tier--closed) measures what that costs: every
 device read returns `None` and the fleet endpoint reports **empty**, with a warning blaming a
 delete that never happened. Adding an HA path is the change that arms it, so the guard TG-6
 defers belongs in the same piece of work.
@@ -156,13 +156,12 @@ ConfigMap/Secret wiring, probe timing, ordering and ingress admission all exerci
   down nowhere. **Documented 2026-08-06** in the [README](../README.md#multiple-devices-in-one-session-fleet).
   **Resolved for the new transport 2026-08-08**: `POST /v1/fleet/mcp` (Streamable HTTP) has no
   stream to defer anything onto, so every method — `tools/call` included — answers on the POST
-  that asked, identically in both modes. The split remains on the SSE fleet route, which is
-  deprecated and scheduled for removal one minor release after Streamable HTTP completes; it is
-  not worth changing a deprecated surface's wire behaviour under existing clients.
-- `pod_active: true` can briefly coexist with a 404 on `/sse` while a worker is terminating,
+  that asked, identically in both modes. **Gone in 0.4.0** with the SSE fleet route itself.
+- `pod_active: true` can briefly coexist with a refusal while a worker is terminating,
   because the lease and the flag converge rather than moving together. Self-resolves in
-  seconds. **Documented 2026-08-06** as a [runbook symptom](runbook.md#pod_active-true-but-sse-returns-404-transient-after-a-worker-roll),
-  so it is not mistaken for a broken device.
+  seconds. **Documented 2026-08-06** as a [runbook symptom](runbook.md#pod_active-true-but-the-device-answers-503-transient-after-a-worker-roll),
+  so it is not mistaken for a broken device. (It was a 404 on `/sse`; since 0.3.8 it is a 503
+  with `Retry-After`, and `/sse` is gone in 0.4.0.)
 - TLS trust was **fleet-global** — one `ca_bundle` per process, so a self-signed device forced
   that trust set onto every outbound call the process made. **Fixed 2026-08-10**:
   `security.mtls.devices.<hostname>` overrides any of the five mTLS keys for one device,

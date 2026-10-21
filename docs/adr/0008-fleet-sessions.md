@@ -1,6 +1,6 @@
 # ADR-0008: Fleet MCP sessions — aggregate multiple devices into one session
 
-- **Status:** Accepted
+- **Status:** Accepted; partly superseded by [ADR-0027](0027-stateless-requests-in-distributed-mode.md) §5 (fleet handles). Its SSE fleet surface was removed in 0.4.0; `/v1/fleet/mcp?devices=` remains for the handshake era, deprecated
 - **Date:** 2026-07-06
 - **Related findings:** —
 

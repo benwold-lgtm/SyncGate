@@ -177,3 +177,35 @@ async def test_existing_pool_and_timeout_settings_are_preserved():
     client = await create_redis({"redis": {"url": "redis://x", "socket_timeout": 9, "max_connections": 33}})
     assert client.connection_pool.max_connections == 33
     assert _kwargs(client)["socket_timeout"] == 9
+
+
+# --- pool exhaustion: wait, don't fail --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_pool_blocks_rather_than_raising_when_every_connection_is_busy():
+    import redis.asyncio as aioredis
+
+    client = await create_redis({"redis": {"url": "redis://localhost:6379/0", "pool_timeout": 7}})
+    assert isinstance(client.connection_pool, aioredis.BlockingConnectionPool)
+    assert client.connection_pool.timeout == 7
+
+
+@pytest.mark.asyncio
+async def test_a_caller_waits_for_a_held_connection_instead_of_failing(real_redis):
+    """The 0.4.0 live run: 40 concurrent calls to one device exhausted a worker's 20-connection
+    pool, and the default pool raised MaxConnectionsError, dead-lettering calls. With one
+    connection held by a blocking read, a second command must wait for it and succeed."""
+    import asyncio
+
+    from tests.conftest import TEST_REDIS_URL
+
+    client = await create_redis({"redis": {"url": TEST_REDIS_URL, "max_connections": 1, "pool_timeout": 5}})
+    try:
+        held = asyncio.create_task(client.xread({"nothing-here": "$"}, block=400))
+        await asyncio.sleep(0.05)  # the read now holds the only connection
+        await client.set("pool-probe", "1")  # waits for it rather than raising
+        assert await client.get("pool-probe") == "1"
+        await held
+    finally:
+        await client.aclose()
