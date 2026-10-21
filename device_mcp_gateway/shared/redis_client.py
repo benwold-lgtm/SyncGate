@@ -68,7 +68,7 @@ async def create_redis(cfg: dict[str, Any], max_connections: int | None = None) 
     The MCP_REDIS_URL env var overrides cfg["redis"]["url"].
 
     Pass max_connections to override the pool size — used for the dedicated
-    pub/sub client, which needs one connection per open SSE stream and so must
+    pub/sub client, which needs one connection per waiting request and so must
     be sized well above the command pool.
 
     **Failover resilience (review item 6).** This used to pass only ``socket_timeout``
@@ -106,16 +106,27 @@ async def create_redis(cfg: dict[str, Any], max_connections: int | None = None) 
     # failing it and letting the caller retry. Raise redis.retries if your election is
     # slower and you would rather wait.
     retry = Retry(_Backoff(base=0.05, cap=1.0), retries)
-    return aioredis.from_url(
+    # A BLOCKING pool: a caller that finds every connection busy waits up to
+    # ``redis.pool_timeout`` for one, instead of getting ``MaxConnectionsError`` at once.
+    # The default pool raises, and a worker running a device at its per-device call cap
+    # (``max_concurrent_calls_per_device``, 20) beside its own consume loop, heartbeat and
+    # health loop needs more than the default 20 connections for a moment — so calls failed
+    # outright and were dead-lettered under a burst any stateless client produces. Found by
+    # the 0.4.0 live run: 40 concurrent calls to one proxied device. Waiting is right because
+    # the shortage is momentary; the wait is bounded well inside the gateway's exchange
+    # deadline, so a genuinely starved pool still fails rather than hanging.
+    pool = aioredis.BlockingConnectionPool.from_url(
         url,
+        max_connections=pool_size,
+        timeout=redis_cfg.get("pool_timeout", 10),
         socket_timeout=redis_cfg.get("socket_timeout", 5),
         socket_connect_timeout=redis_cfg.get("socket_connect_timeout", 5),
-        max_connections=pool_size,
         decode_responses=True,
         retry=retry,
         retry_on_error=[RedisConnectionError, RedisTimeoutError],
         health_check_interval=redis_cfg.get("health_check_interval", 30),
     )
+    return aioredis.Redis.from_pool(pool)
 
 
 async def wait_for_redis(client: aioredis.Redis, cfg: dict[str, Any], *, component: str = "gateway") -> None:
