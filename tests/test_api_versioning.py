@@ -19,11 +19,13 @@ import pytest
 from device_mcp_gateway import API_V1_PREFIX
 from device_mcp_gateway.core.translator import McpManifest
 from device_mcp_gateway.pods.device_pod import DevicePod
-from device_mcp_gateway.pods.pod_base import (
-    PREFERRED_PROTOCOL_VERSION,
-    SUPPORTED_PROTOCOL_VERSIONS,
-    negotiate_protocol_version,
+from device_mcp_gateway.core.protocol import (
+    HANDSHAKE_PROTOCOL_VERSIONS as SUPPORTED_PROTOCOL_VERSIONS,
 )
+from device_mcp_gateway.core.protocol import (
+    PREFERRED_HANDSHAKE_VERSION as PREFERRED_PROTOCOL_VERSION,
+)
+from device_mcp_gateway.core.protocol import negotiate_protocol_version
 
 # --- Part A: REST /v1 cutover ------------------------------------------------
 
@@ -74,9 +76,9 @@ def _pod() -> DevicePod:
 async def test_initialize_echoes_client_protocol_version():
     pod = _pod()
     resp = await pod._handle_mcp_message(
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}}
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}
     )
-    assert resp["result"]["protocolVersion"] == "2025-03-26"
+    assert resp["result"]["protocolVersion"] == "2025-06-18"
 
 
 @pytest.mark.asyncio

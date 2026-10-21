@@ -20,10 +20,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 from sse_starlette import EventSourceResponse
 
-from device_mcp_gateway import API_V1_PREFIX, __version__, fleet_service, metrics
+from device_mcp_gateway import API_V1_PREFIX, fleet_service, metrics
 from device_mcp_gateway.api.dispatch import _GATEWAY_ID, spawn_timeout_watcher
 from device_mcp_gateway.audit import audit_log
 from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, rpc_error
+from device_mcp_gateway.fleet_service import fleet_initialize_response
 from device_mcp_gateway.observability import tracing
 from device_mcp_gateway.ratelimit import rate_limit, rate_limit_principal
 from device_mcp_gateway.rbac import SCOPE_TOOLS_CALL, require_scope
@@ -155,18 +156,8 @@ async def fleet_sse_message(request: Request, session_id: str = Query(...)):
         msg_id = payload.get("id") if isinstance(payload, dict) else None
 
         if method == "initialize":
-            from device_mcp_gateway.pods.pod_base import negotiate_protocol_version
-
             params = payload.get("params") or {}
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
-                    "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "mcp-fleet", "version": __version__},
-                },
-            }
+            return fleet_initialize_response(msg_id, params)
         if method.startswith("notifications/"):
             return None
         if method == "ping":

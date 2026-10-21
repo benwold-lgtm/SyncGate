@@ -24,6 +24,7 @@ from loguru import logger
 
 from device_mcp_gateway import __version__, metrics
 from device_mcp_gateway.core.errors import RPC_METHOD_NOT_FOUND, RPC_NO_WORKER, rpc_error
+from device_mcp_gateway.core.protocol import FLEET_CAPABILITIES, initialize_response
 from device_mcp_gateway.core.translator import _sanitize_name, dedupe_name
 
 
@@ -123,6 +124,13 @@ def rewrite_tools_call(manifest: FleetManifest, message: dict[str, Any]) -> tupl
     return entry.hostname, rewritten
 
 
+def fleet_initialize_response(msg_id: Any, params: Any) -> dict[str, Any]:
+    """The ``initialize`` response every fleet surface sends: tools only (ADR-0008)."""
+    return initialize_response(
+        msg_id, params, server_name="mcp-fleet", server_version=__version__, capabilities=FLEET_CAPABILITIES
+    )
+
+
 async def handle_fleet_message(reg: Any, manifest: FleetManifest, message: dict[str, Any]) -> dict[str, Any] | None:
     """Dispatch one JSON-RPC message for a fleet session.
 
@@ -132,22 +140,12 @@ async def handle_fleet_message(reg: Any, manifest: FleetManifest, message: dict[
     per-device pod — the return value here is what gets pushed onto the
     session's SSE queue, not the HTTP POST response body.
     """
-    from device_mcp_gateway.pods.pod_base import negotiate_protocol_version
-
     method = message.get("method", "") if isinstance(message, dict) else ""
     msg_id = message.get("id") if isinstance(message, dict) else None
 
     if method == "initialize":
         params = message.get("params") or {}
-        return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "mcp-fleet", "version": __version__},
-            },
-        }
+        return fleet_initialize_response(msg_id, params)
     if method.startswith("notifications/"):
         return None
     if method == "ping":

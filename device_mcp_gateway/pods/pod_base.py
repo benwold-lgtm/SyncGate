@@ -49,30 +49,11 @@ from device_mcp_gateway.core.errors import (
     RPC_METHOD_NOT_FOUND,
     rpc_error,
 )
+from device_mcp_gateway.core.protocol import DEVICE_CAPABILITIES, initialize_response
 from device_mcp_gateway.core.translator import McpManifest
 from device_mcp_gateway.pods.rate_limiter import TokenBucket
 from device_mcp_gateway.pods.sse_server import SseTransport
 from device_mcp_gateway.security.url_policy import build_guarded_client
-
-# MCP protocol versions this gateway speaks, newest first. The `initialize`
-# handshake echoes the client's requested version when we support it, otherwise
-# it falls back to our preferred (newest) version per the MCP spec. Keeping this
-# as data — rather than a hardcoded literal in the handler — means version
-# support is one edit, and negotiation is testable in isolation (F-15).
-SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-06-18", "2025-03-26", "2024-11-05")
-PREFERRED_PROTOCOL_VERSION: str = SUPPORTED_PROTOCOL_VERSIONS[0]
-
-
-def negotiate_protocol_version(requested: Any) -> str:
-    """Resolve the MCP protocolVersion to advertise in the initialize response.
-
-    Echoes the client's requested version when supported; otherwise returns our
-    preferred (newest) version, signalling the client to retry on that version.
-    A missing/invalid request also yields the preferred version.
-    """
-    if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS:
-        return requested
-    return PREFERRED_PROTOCOL_VERSION
 
 
 def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> str | None:
@@ -277,24 +258,13 @@ class BasePod(ABC):
         params = message.get("params") or {}
 
         if method == "initialize":
-            return {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
-                    "capabilities": {
-                        "tools": {"listChanged": False},
-                        "resources": {"listChanged": False, "subscribe": False},
-                        # Advertised for every pod kind: a pod with none answers an empty
-                        # list, which is a truthful "none" rather than "method not found".
-                        "prompts": {"listChanged": False},
-                    },
-                    "serverInfo": {
-                        "name": self.manifest.server_name,
-                        "version": self.manifest.server_version,
-                    },
-                },
-            }
+            return initialize_response(
+                msg_id,
+                params,
+                server_name=self.manifest.server_name,
+                server_version=self.manifest.server_version,
+                capabilities=DEVICE_CAPABILITIES,
+            )
 
         if method.startswith("notifications/"):
             return None  # notifications require no response

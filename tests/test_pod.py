@@ -231,7 +231,7 @@ async def test_resources_read_unknown_uri_returns_error():
 async def test_initialize_advertises_resources_capability():
     pod = DevicePod(hostname="test-device", manifest=_resource_manifest(), transport="sse", base_url="http://d.local")
     response = await pod._handle_mcp_message(
-        {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}}
+        {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}
     )
     caps = response["result"]["capabilities"]
     assert "resources" in caps
