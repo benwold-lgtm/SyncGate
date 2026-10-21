@@ -562,7 +562,7 @@ that breaks them. Details are in [docs/upgrade.md](docs/upgrade.md#breaking-api-
   job stays runnable behind a manual `publish_catalog` input, because a job that cannot run
   is a job that silently rots — which would defeat freezing rather than deleting.
 
-  **Not a reversal of [ADR-0013](docs/adr/0013-multi-tenancy.md).** D-1
+  **Not a reversal of [ADR-0013](docs/adr/0013-two-plane-tenancy-and-the-provider-plane.md).** D-1
   (single-tenant-per-stack) is unaffected; it was always the model the supported editions
   use, and a tenant stack has never needed the catalog — the base kustomization excludes it
   deliberately.
@@ -2056,7 +2056,7 @@ deployment profile for low-power boxes.
   generates + persists a key to a shared volume and prints it for MCP-client config, and the
   BFF reads the same file via `GATEWAY_TOKEN_FILE`. No-op unless the env var is set, so
   existing key resolution is unchanged. Multi-arch (amd64+arm64) images publish to GHCR on
-  release tags. See [docs/lite-deploy.md](docs/lite-deploy.md).
+  release tags. See the [SyncGate-Lite deploy guide](https://github.com/benwold-lgtm/SyncGate-Lite/blob/main/docs/deploy.md) (Lite moved to its own repo).
 - **`GET /v1/auth/me` (whoami).** Returns the authenticated caller's own `subject`, effective
   `scopes`, and `auth_method`. Requires authentication but no specific scope. It lets a UI/BFF
   gate views on the **gateway's** scopes instead of maintaining a parallel role model, so the
