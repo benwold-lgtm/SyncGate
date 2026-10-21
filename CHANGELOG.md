@@ -25,6 +25,18 @@ the notes for each release before upgrading. See [docs/upgrade.md](docs/upgrade.
   versions, the negotiation and the capability sets live there too.
   `tests/test_protocol.py` checks every result shape a pod produces against the official
   SDK's wire models at each advertised revision, and fails if the model would drop a field.
+- **The era interop matrix** (`tests/test_interop_eras.py`): the official MCP SDK client in its
+  `legacy`, `auto` and pinned-`2026-07-28` modes against a real gateway, and the gateway's
+  upstream client against the SDK server as a dual-era, handshake-only and modern-only peer.
+  Nothing on the far side of the wire is the gateway's own. Cells the gateway cannot pass
+  yet are strict `xfail`s naming the PR that closes them.
+
+### Fixed
+
+- **An upstream's refusal now says why.** A 4xx from an upstream MCP server was reported as
+  `initialize to … returned HTTP 400`, dropping the JSON-RPC error that names the cause. It now
+  reads, for example, `… returned HTTP 400 (-32022: Unsupported protocol version)`. The text is
+  the upstream's, so it is collapsed to one line and capped at 200 characters.
 
 ## [0.3.9] - 2026-10-20
 
