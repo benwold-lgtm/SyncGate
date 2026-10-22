@@ -586,8 +586,8 @@ CRDs still applies cleanly. See the README's "Cluster prerequisites" table.
 #    registry, or a locally built image), edit the `images:` block in kustomization.yaml
 #    ONCE — it applies to both the gateway and the worker, which share one image and must
 #    stay in lockstep across a Redis schema change.
-#      docker buildx imagetools inspect ghcr.io/benwold-lgtm/device-mcp-gateway:0.3.9
-#    (Building from source: `docker build -t <your-registry>/device-mcp-gateway:0.3.9 .`,
+#      docker buildx imagetools inspect ghcr.io/benwold-lgtm/device-mcp-gateway:0.4.0
+#    (Building from source: `docker build -t <your-registry>/device-mcp-gateway:0.4.0 .`,
 #    push it somewhere the cluster can pull from, then set newName/newTag in that block;
 #    kind/minikube: skip the push, `kind load docker-image my-gateway:dev`, and DROP the
 #    digest — a digest pin will not resolve against a locally built image.)

@@ -58,7 +58,7 @@ resources:
 # images:
 #   - name: ghcr.io/benwold-lgtm/device-mcp-gateway
 #     digest: sha256:...                      # preferred: immutable
-#     # newTag: "0.3.9"                       # or a semver tag; never :latest in production
+#     # newTag: "0.4.0"                       # or a semver tag; never :latest in production
 #
 # Building locally instead (kind/minikube)? Point `newName` at your local image and load
 # it into the cluster — `kind load docker-image my-gateway:dev` — since a digest pin will
